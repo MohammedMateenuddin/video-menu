@@ -39,7 +39,7 @@ export default function CustomerMenu() {
   const [activeIndex, setActiveIndex] = useState(0);
   const [videoProgress, setVideoProgress] = useState(0);
 
-  const [muted, setMuted] = useState(true);
+  const [muted, setMuted] = useState(false);
   const [paused, setPaused] = useState(false);
 
   const [isEndScreen, setIsEndScreen] = useState(false);
@@ -755,15 +755,24 @@ export default function CustomerMenu() {
 
                 <div className="flex items-center gap-2">
                   {restaurant.pdf_menu_url && (
-                    <a
-                      href={restaurant.pdf_menu_url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="w-10 h-10 rounded-full bg-black/40 backdrop-blur-md border border-white/10 flex items-center justify-center hover:bg-black/60 transition"
-                      title="View PDF Menu"
-                    >
-                      <FileText size={18} />
-                    </a>
+                    <div className="relative">
+                      <a
+                        href={restaurant.pdf_menu_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="w-10 h-10 rounded-full bg-black/40 backdrop-blur-md border border-white/10 flex items-center justify-center hover:bg-black/60 transition relative z-10"
+                        title="View PDF Menu"
+                      >
+                        <FileText size={18} />
+                      </a>
+                      
+                      {/* Hint Popup (only on first dish) */}
+                      {index === 0 && (
+                        <div className="absolute top-[120%] right-0 whitespace-nowrap bg-white text-black px-3 py-1.5 rounded-lg text-xs font-bold shadow-xl animate-bounce pointer-events-none origin-top-right before:content-[''] before:absolute before:bottom-[99%] before:right-4 before:border-4 before:border-transparent before:border-b-white">
+                          View full menu
+                        </div>
+                      )}
+                    </div>
                   )}
 
                   <button
