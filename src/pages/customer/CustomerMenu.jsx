@@ -483,7 +483,7 @@ export default function CustomerMenu() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-black text-white flex items-center justify-center">
+      <div className="min-h-[100dvh] bg-black text-white flex items-center justify-center">
         <div className="text-center">
           <div className="w-9 h-9 border-2 border-white/20 border-t-white rounded-full animate-spin mx-auto mb-4" />
 
@@ -499,7 +499,7 @@ export default function CustomerMenu() {
 
   if (error || !restaurant) {
     return (
-      <div className="min-h-screen bg-black text-white flex items-center justify-center px-6">
+      <div className="min-h-[100dvh] bg-black text-white flex items-center justify-center px-6">
         <div className="text-center max-w-md">
           <div className="w-16 h-16 mx-auto rounded-2xl bg-white/10 flex items-center justify-center mb-6">
             <UtensilsCrossed size={28} className="text-white/60" />
@@ -522,7 +522,7 @@ export default function CustomerMenu() {
   if (items.length === 0) {
     return (
       <div
-        className="min-h-screen text-white flex items-center justify-center px-6"
+        className="min-h-[100dvh] text-white flex items-center justify-center px-6"
         style={{
           background: `linear-gradient(
             135deg,
@@ -564,7 +564,7 @@ export default function CustomerMenu() {
 
   return (
     <div
-      className="h-screen w-full overflow-y-auto snap-y snap-mandatory bg-black text-white"
+      className="h-[100dvh] w-full overflow-y-auto snap-y snap-mandatory bg-black text-white"
       style={{
         backgroundColor: "#000000",
       }}
@@ -589,7 +589,7 @@ export default function CustomerMenu() {
             ref={(element) => setSectionRef(item.id, element)}
             data-index={index}
             data-type="item"
-            className="relative h-screen w-full snap-start snap-always overflow-hidden bg-black"
+            className="relative h-[100dvh] w-full snap-start snap-always overflow-hidden bg-black"
           >
             {/* =========================================
                 BACKGROUND MEDIA
@@ -906,7 +906,7 @@ export default function CustomerMenu() {
       <section
         ref={endScreenRef}
         data-type="end"
-        className="relative h-screen w-full snap-start flex items-center justify-center overflow-hidden"
+        className="relative h-[100dvh] w-full snap-start flex items-center justify-center overflow-hidden"
         style={{
           background: `linear-gradient(
             135deg,
