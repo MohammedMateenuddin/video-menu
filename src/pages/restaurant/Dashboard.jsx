@@ -12,13 +12,28 @@ import {
   RefreshCw,
   ArrowRight,
   Eye,
+  Download,
 } from "lucide-react";
 
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+} from "recharts";
+import { jsPDF } from "jspdf";
+import autoTable from "jspdf-autotable";
+
+// We keep Recharts for the UI.
 import { supabase } from "../../lib/supabase";
 import { getCurrentRestaurant } from "../../services/restaurantService";
 
 function Dashboard() {
   const [restaurant, setRestaurant] = useState(null);
+  const [chartData, setChartData] = useState([]);
 
   const [stats, setStats] = useState({
     menuItems: 0,
@@ -140,6 +155,38 @@ function Dashboard() {
         }
       });
 
+      const fourteenDaysAgo = new Date(now);
+      fourteenDaysAgo.setDate(now.getDate() - 13);
+      fourteenDaysAgo.setHours(0, 0, 0, 0);
+
+      const { data: rawViews } = await supabase
+        .from("menu_views")
+        .select("created_at")
+        .eq("restaurant_id", restaurantId)
+        .gte("created_at", fourteenDaysAgo.toISOString());
+
+      const chartMap = {};
+      for (let i = 0; i < 14; i++) {
+        const d = new Date(fourteenDaysAgo);
+        d.setDate(d.getDate() + i);
+        const dateStr = d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+        chartMap[dateStr] = 0;
+      }
+      
+      if (rawViews) {
+        rawViews.forEach(v => {
+          const dateStr = new Date(v.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+          if (chartMap[dateStr] !== undefined) {
+            chartMap[dateStr]++;
+          }
+        });
+      }
+
+      setChartData(Object.keys(chartMap).map(key => ({
+        date: key,
+        views: chartMap[key]
+      })));
+
       setRecentItems(items.slice(0, 5));
     } catch (error) {
       console.error("Dashboard error:", error);
@@ -172,6 +219,74 @@ function Dashboard() {
         import.meta.env.VITE_PUBLIC_URL || window.location.origin
       }/r/${restaurant.slug}`
     : null;
+
+  // =========================================
+  // EXPORTS
+  // =========================================
+
+  const [exporting, setExporting] = useState(false);
+
+  async function exportPDF() {
+    setExporting(true);
+    try {
+      const doc = new jsPDF();
+      const pageWidth = doc.internal.pageSize.width;
+      
+      // Header
+      doc.setFontSize(22);
+      doc.setTextColor(0, 0, 0);
+      doc.text("Analytics Report", 14, 22);
+      
+      doc.setFontSize(14);
+      doc.setTextColor(100, 100, 100);
+      doc.text(restaurant?.name || "Restaurant", 14, 30);
+      
+      doc.setFontSize(10);
+      doc.text(`Generated on: ${new Date().toLocaleDateString()}`, 14, 36);
+
+      // Summary Stats
+      doc.setDrawColor(200, 200, 200);
+      doc.line(14, 42, pageWidth - 14, 42);
+      
+      doc.setFontSize(12);
+      doc.setTextColor(0, 0, 0);
+      doc.text("Summary", 14, 52);
+      
+      doc.setFontSize(10);
+      doc.text(`Total Menu Items: ${String(stats.menuItems)}`, 14, 60);
+      doc.text(`Food Videos: ${String(stats.videos)}`, 14, 66);
+      doc.text(`Bestsellers: ${String(stats.bestsellers)}`, 14, 72);
+      
+      doc.text(`Today's Views: ${String(stats.views.daily)}`, pageWidth / 2, 60);
+      doc.text(`This Week's Views: ${String(stats.views.weekly)}`, pageWidth / 2, 66);
+      doc.text(`All-Time Views: ${String(stats.views.allTime)}`, pageWidth / 2, 72);
+
+      doc.line(14, 78, pageWidth - 14, 78);
+
+      // Daily Breakdown Table
+      doc.setFontSize(12);
+      doc.text("Daily View Breakdown (Last 14 Days)", 14, 88);
+
+      const tableData = chartData.map(item => [item.date, item.views]);
+
+      autoTable(doc, {
+        startY: 94,
+        head: [['Date', 'Menu Views']],
+        body: tableData,
+        theme: 'striped',
+        headStyles: { fillColor: [17, 24, 39] },
+        styles: { fontSize: 10, cellPadding: 4 },
+        margin: { top: 10, left: 14, right: 14 }
+      });
+
+      doc.save(`${restaurant?.name?.replace(/\s+/g, '_') || "Restaurant"}_Analytics.pdf`);
+    } catch (err) {
+      console.error("PDF generation error:", err);
+      alert("Failed to generate PDF report.");
+    } finally {
+      setExporting(false);
+    }
+  }
 
   // =========================================
   // LOADING
@@ -229,7 +344,16 @@ function Dashboard() {
           </p>
         </div>
 
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap gap-2 print:hidden">
+          <button
+            onClick={exportPDF}
+            disabled={exporting}
+            className="inline-flex items-center gap-2 border bg-white px-4 py-3 rounded-xl font-medium hover:bg-gray-50 transition disabled:opacity-50"
+          >
+            <Download size={17} className={exporting ? "animate-bounce" : ""} />
+            {exporting ? "Generating Report..." : "Download Report (PDF)"}
+          </button>
+          
           <Link
             to="/dashboard/menu"
             className="inline-flex items-center gap-2 bg-black text-white px-4 py-3 rounded-xl font-medium hover:bg-gray-800 transition"
@@ -243,7 +367,7 @@ function Dashboard() {
               href={menuUrl}
               target="_blank"
               rel="noreferrer"
-              className="inline-flex items-center gap-2 border bg-white px-4 py-3 rounded-xl font-medium hover:bg-gray-50 transition"
+              className="inline-flex items-center gap-2 border bg-white px-4 py-3 rounded-xl font-medium hover:bg-gray-50 transition hidden sm:inline-flex"
             >
               <ExternalLink size={17} />
               View Menu
@@ -377,6 +501,12 @@ function Dashboard() {
       </div>
 
       {/* =========================================
+          ANALYTICS WRAPPER
+      ========================================== */}
+      
+      <div id="analytics-dashboard" className="space-y-6">
+
+      {/* =========================================
           SECONDARY STATS
       ========================================== */}
 
@@ -435,6 +565,29 @@ function Dashboard() {
             {restaurant?.is_active ? "Active" : "Inactive"}
           </span>
         </div>
+      </div>
+      
+      {/* =========================================
+          VIEWS CHART
+      ========================================== */}
+      
+      <div className="bg-white border rounded-2xl p-5 sm:p-6 mt-6">
+        <h2 className="font-semibold text-lg mb-6">Views Over Time (Last 14 Days)</h2>
+        <div className="h-[300px] w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={chartData}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E5E7EB" />
+              <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#6B7280' }} dy={10} />
+              <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#6B7280' }} dx={-10} allowDecimals={false} />
+              <Tooltip
+                cursor={{ fill: '#F3F4F6' }}
+                contentStyle={{ borderRadius: '12px', border: '1px solid #E5E7EB', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
+              />
+              <Bar dataKey="views" fill="#111827" radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
       </div>
 
       {/* =========================================

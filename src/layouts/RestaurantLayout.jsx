@@ -110,8 +110,8 @@ function RestaurantLayout() {
       <aside
         className={
           mobile
-            ? "fixed inset-y-0 left-0 z-50 w-72 bg-white border-r flex flex-col shadow-xl"
-            : "hidden lg:flex lg:w-64 xl:w-72 bg-white border-r min-h-screen flex-col shrink-0"
+            ? "fixed inset-y-0 left-0 z-50 w-72 bg-white border-r flex flex-col shadow-xl print:hidden"
+            : "hidden lg:flex lg:w-64 xl:w-72 bg-white border-r min-h-screen flex-col shrink-0 print:hidden"
         }
       >
         {/* =========================================
@@ -312,7 +312,7 @@ function RestaurantLayout() {
             HEADER
         ========================================== */}
 
-        <header className="h-16 sm:h-[68px] bg-white border-b flex items-center justify-between px-4 sm:px-6 lg:px-8 sticky top-0 z-30">
+        <header className="h-16 sm:h-[68px] bg-white border-b flex items-center justify-between px-4 sm:px-6 lg:px-8 sticky top-0 z-30 print:hidden">
           {/* Mobile menu */}
 
           <button

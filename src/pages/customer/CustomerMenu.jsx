@@ -46,6 +46,10 @@ export default function CustomerMenu() {
   const [showInfo, setShowInfo] = useState(false);
   const [shareMessage, setShareMessage] = useState("");
 
+  const [introPlaying, setIntroPlaying] = useState(false);
+  const [introFading, setIntroFading] = useState(false);
+  const [showWelcomeScreen, setShowWelcomeScreen] = useState(false);
+
   const videoRefs = useRef({});
   const sectionRefs = useRef({});
   const endScreenRef = useRef(null);
@@ -107,6 +111,10 @@ export default function CustomerMenu() {
         return;
       }
       setRestaurant(restaurantData);
+
+      if (restaurantData.intro_video_url) {
+        setShowWelcomeScreen(true);
+      }
 
       // -----------------------------------------
       // AVAILABLE MENU ITEMS
@@ -569,6 +577,72 @@ export default function CustomerMenu() {
         backgroundColor: "#000000",
       }}
     >
+      {/* =========================================
+          WELCOME SCREEN (For Audio Autoplay)
+      ========================================== */}
+
+      {showWelcomeScreen && (
+        <div className="fixed inset-0 z-[60] flex flex-col items-center justify-center bg-black text-white p-6">
+          {restaurant.logo_url ? (
+            <img
+              src={restaurant.logo_url}
+              alt={restaurant.name}
+              className="w-24 h-24 rounded-full object-cover mb-6 border-4 border-white/20"
+            />
+          ) : (
+            <div className="w-24 h-24 rounded-full mb-6 flex items-center justify-center text-3xl font-bold border-4 border-white/20 bg-white/10">
+              {restaurant.name?.charAt(0)?.toUpperCase()}
+            </div>
+          )}
+          <h1 className="text-3xl font-bold mb-2">{restaurant.name}</h1>
+          <p className="text-white/70 text-center mb-10 max-w-sm">
+            Experience our visual menu. Turn your sound on for the best experience.
+          </p>
+          <button
+            onClick={() => {
+              setShowWelcomeScreen(false);
+              setIntroPlaying(true);
+            }}
+            className="px-8 py-4 bg-white text-black rounded-full font-bold text-lg shadow-[0_0_40px_rgba(255,255,255,0.3)] animate-pulse hover:animate-none transition"
+          >
+            Enter Menu
+          </button>
+        </div>
+      )}
+
+      {/* =========================================
+          INTRO OVERLAY
+      ========================================== */}
+
+      {introPlaying && (
+        <div
+          className={`fixed inset-0 z-50 bg-black flex items-center justify-center transition-all duration-1000 ease-[cubic-bezier(0.87,0,0.13,1)] ${
+            introFading ? "opacity-0 scale-110 pointer-events-none" : "opacity-100 scale-100"
+          }`}
+        >
+          <video
+            src={restaurant.intro_video_url}
+            autoPlay
+            playsInline
+            onEnded={() => {
+              setIntroFading(true);
+              setTimeout(() => setIntroPlaying(false), 1000);
+            }}
+            className="w-full h-full object-cover"
+          />
+          
+          <button
+            onClick={() => {
+              setIntroFading(true);
+              setTimeout(() => setIntroPlaying(false), 1000);
+            }}
+            className="absolute bottom-10 right-6 px-4 py-2 bg-white/20 backdrop-blur-md text-white rounded-full text-sm font-medium border border-white/20 z-10"
+          >
+            Skip Intro
+          </button>
+        </div>
+      )}
+
       {/* =========================================
           MENU ITEMS
       ========================================== */}

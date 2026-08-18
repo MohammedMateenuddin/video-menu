@@ -13,6 +13,7 @@ import {
   Store,
   Eye,
   FileText,
+  Video,
 } from "lucide-react";
 
 import { supabase } from "../../lib/supabase";
@@ -33,17 +34,20 @@ function Settings() {
     secondary_color: "#ffffff",
     logo_url: "",
     pdf_menu_url: "",
+    intro_video_url: "",
   });
 
   const [originalForm, setOriginalForm] = useState(null);
 
   const [logoFile, setLogoFile] = useState(null);
+  const [introVideoFile, setIntroVideoFile] = useState(null);
 
   const [loading, setLoading] = useState(true);
 
   const [saving, setSaving] = useState(false);
 
   const [uploadingLogo, setUploadingLogo] = useState(false);
+  const [uploadingIntroVideo, setUploadingIntroVideo] = useState(false);
 
   const [message, setMessage] = useState("");
 
@@ -80,6 +84,7 @@ function Settings() {
         secondary_color: restaurant.secondary_color || "#ffffff",
         logo_url: restaurant.logo_url || "",
         pdf_menu_url: restaurant.pdf_menu_url || "",
+        intro_video_url: restaurant.intro_video_url || "",
       };
 
       setRestaurantId(restaurant.id);
@@ -224,6 +229,47 @@ function Settings() {
   }
 
   // =========================================
+  // INTRO VIDEO UPLOAD
+  // =========================================
+
+  async function handleIntroVideoUpload(file) {
+    if (!file || !restaurantId) return;
+
+    if (!file.type.startsWith("video/")) {
+      setError("Please select a valid video file.");
+      return;
+    }
+
+    if (file.size > 50 * 1024 * 1024) {
+      setError("Intro video must be smaller than 50MB.");
+      return;
+    }
+
+    try {
+      setUploadingIntroVideo(true);
+      setError("");
+      setMessage("");
+
+      const url = await uploadMenuMedia(file, restaurantId, "intro");
+
+      setForm((prev) => ({ ...prev, intro_video_url: url }));
+      setIntroVideoFile(file);
+      setMessage("Intro video uploaded successfully. Save your changes to keep it.");
+    } catch (error) {
+      console.error("Intro video upload error:", error);
+      setError(error?.message || "Unable to upload intro video.");
+    } finally {
+      setUploadingIntroVideo(false);
+    }
+  }
+
+  function removeIntroVideo() {
+    setForm((prev) => ({ ...prev, intro_video_url: "" }));
+    setIntroVideoFile(null);
+    setMessage("");
+  }
+
+  // =========================================
   // RESET
   // =========================================
 
@@ -238,6 +284,7 @@ function Settings() {
 
     setLogoFile(null);
     setPdfFile(null);
+    setIntroVideoFile(null);
     setMessage("");
     setError("");
   }
@@ -317,6 +364,7 @@ function Settings() {
           secondary_color: form.secondary_color.toUpperCase(),
           logo_url: form.logo_url || null,
           pdf_menu_url: form.pdf_menu_url || null,
+          intro_video_url: form.intro_video_url || null,
         })
         .eq("id", restaurantId);
 
@@ -338,6 +386,14 @@ function Settings() {
         originalForm.pdf_menu_url !== form.pdf_menu_url
       ) {
         await deleteMenuMedia(originalForm.pdf_menu_url);
+      }
+      
+      if (
+        originalForm &&
+        originalForm.intro_video_url &&
+        originalForm.intro_video_url !== form.intro_video_url
+      ) {
+        await deleteMenuMedia(originalForm.intro_video_url);
       }
 
       const savedForm = {
@@ -715,6 +771,76 @@ function Settings() {
 
                 <p className="text-xs text-gray-400 mt-3">
                   PDF only. Maximum 10MB.
+                </p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* =========================================
+            INTRO VIDEO
+        ========================================== */}
+
+        <section className="bg-white border rounded-2xl overflow-hidden">
+          <div className="px-6 py-5 border-b">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-lg bg-gray-100 flex items-center justify-center">
+                <Video size={18} />
+              </div>
+
+              <div>
+                <h2 className="font-semibold text-lg">Intro Video</h2>
+
+                <p className="text-sm text-gray-500 mt-1">
+                  A video that plays automatically when customers scan your menu.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="p-6">
+            <div className="flex flex-col sm:flex-row items-start gap-6">
+              <div className="shrink-0">
+                <div className="w-28 h-28 rounded-2xl bg-gray-100 border flex items-center justify-center overflow-hidden">
+                  {form.intro_video_url ? (
+                    <video src={form.intro_video_url} className="w-full h-full object-cover" muted playsInline />
+                  ) : (
+                    <Video size={32} className="text-gray-400" />
+                  )}
+                </div>
+              </div>
+
+              <div>
+                <label className="inline-flex items-center gap-2 bg-black text-white px-4 py-3 rounded-xl cursor-pointer hover:bg-gray-800 transition font-medium">
+                  <Upload size={17} />
+
+                  {uploadingIntroVideo ? "Uploading..." : "Upload Intro Video"}
+
+                  <input
+                    type="file"
+                    accept="video/mp4,video/quicktime,video/webm"
+                    className="hidden"
+                    disabled={uploadingIntroVideo}
+                    onChange={(e) => handleIntroVideoUpload(e.target.files?.[0])}
+                  />
+                </label>
+
+                {form.intro_video_url && (
+                  <button
+                    type="button"
+                    onClick={removeIntroVideo}
+                    className="ml-2 px-4 py-3 rounded-xl border text-sm font-medium hover:bg-gray-50 text-red-600"
+                  >
+                    Remove
+                  </button>
+                )}
+
+                {introVideoFile && (
+                  <p className="text-xs text-gray-500 mt-3">{introVideoFile.name}</p>
+                )}
+
+                <p className="text-xs text-gray-400 mt-3">
+                  MP4, MOV, or WebM. Maximum 50MB. Vertical (9:16) format works best.
                 </p>
               </div>
             </div>
