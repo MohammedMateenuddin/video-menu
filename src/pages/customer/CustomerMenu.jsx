@@ -626,7 +626,10 @@ export default function CustomerMenu() {
             playsInline
             onEnded={() => {
               setIntroFading(true);
-              setTimeout(() => setIntroPlaying(false), 1000);
+              setTimeout(() => {
+                setIntroPlaying(false);
+                playActiveVideo(activeIndex);
+              }, 1000);
             }}
             className="w-full h-full object-cover"
           />
@@ -634,7 +637,10 @@ export default function CustomerMenu() {
           <button
             onClick={() => {
               setIntroFading(true);
-              setTimeout(() => setIntroPlaying(false), 1000);
+              setTimeout(() => {
+                setIntroPlaying(false);
+                playActiveVideo(activeIndex);
+              }, 1000);
             }}
             className="absolute bottom-10 right-6 px-4 py-2 bg-white/20 backdrop-blur-md text-white rounded-full text-sm font-medium border border-white/20 z-10"
           >
