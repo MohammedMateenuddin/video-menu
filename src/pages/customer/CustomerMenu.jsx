@@ -630,9 +630,9 @@ export default function CustomerMenu() {
               } else {
                 isMenuInteractiveRef.current = true;
                 playActiveVideo(activeIndex);
-              }
-              if (bgMusicRef.current) {
-                bgMusicRef.current.play().catch(console.error);
+                if (bgMusicRef.current) {
+                  bgMusicRef.current.play().catch(console.error);
+                }
               }
             }}
             className="px-8 py-4 bg-white text-black rounded-full font-bold text-lg shadow-[0_0_40px_rgba(255,255,255,0.3)] animate-pulse hover:animate-none transition"
@@ -662,6 +662,9 @@ export default function CustomerMenu() {
                 setIntroPlaying(false);
                 isMenuInteractiveRef.current = true;
                 playActiveVideo(activeIndex);
+                if (bgMusicRef.current) {
+                  bgMusicRef.current.play().catch(console.error);
+                }
               }, 1000);
             }}
             className="w-full h-full object-cover"
@@ -674,6 +677,9 @@ export default function CustomerMenu() {
                 setIntroPlaying(false);
                 isMenuInteractiveRef.current = true;
                 playActiveVideo(activeIndex);
+                if (bgMusicRef.current) {
+                  bgMusicRef.current.play().catch(console.error);
+                }
               }, 1000);
             }}
             className="absolute bottom-10 right-6 px-4 py-2 bg-white/20 backdrop-blur-md text-white rounded-full text-sm font-medium border border-white/20 z-10"
