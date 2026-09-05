@@ -53,6 +53,7 @@ export default function CustomerMenu() {
   const videoRefs = useRef({});
   const sectionRefs = useRef({});
   const endScreenRef = useRef(null);
+  const bgMusicRef = useRef(null);
 
   // =========================================
   // LOAD RESTAURANT + MENU
@@ -112,7 +113,7 @@ export default function CustomerMenu() {
       }
       setRestaurant(restaurantData);
 
-      if (restaurantData.intro_video_url) {
+      if (restaurantData.intro_video_url || restaurantData.background_music_url) {
         setShowWelcomeScreen(true);
       }
 
@@ -578,6 +579,19 @@ export default function CustomerMenu() {
       }}
     >
       {/* =========================================
+          GLOBAL BACKGROUND MUSIC
+      ========================================== */}
+      
+      {restaurant.background_music_url && (
+        <audio
+          ref={bgMusicRef}
+          src={restaurant.background_music_url}
+          loop
+          muted={muted}
+        />
+      )}
+
+      {/* =========================================
           WELCOME SCREEN (For Audio Autoplay)
       ========================================== */}
 
@@ -601,7 +615,12 @@ export default function CustomerMenu() {
           <button
             onClick={() => {
               setShowWelcomeScreen(false);
-              setIntroPlaying(true);
+              if (restaurant.intro_video_url) {
+                setIntroPlaying(true);
+              }
+              if (bgMusicRef.current) {
+                bgMusicRef.current.play().catch(console.error);
+              }
             }}
             className="px-8 py-4 bg-white text-black rounded-full font-bold text-lg shadow-[0_0_40px_rgba(255,255,255,0.3)] animate-pulse hover:animate-none transition"
           >
@@ -911,11 +930,11 @@ export default function CustomerMenu() {
                 {/* Dish name */}
 
                 <div className="flex items-end gap-3 sm:gap-4 flex-wrap">
-                  <h1 className="text-3xl sm:text-4xl lg:text-5xl font-bold leading-tight drop-shadow-lg">
+                  <h1 className="text-2xl sm:text-3xl font-bold leading-tight drop-shadow-lg">
                     {item.name}
                   </h1>
 
-                  <span className="text-2xl sm:text-3xl font-bold drop-shadow-lg text-white/90 pb-1">
+                  <span className="text-xl sm:text-2xl font-bold drop-shadow-lg text-white/90 pb-0.5">
                     ₹{Number(item.price || 0).toFixed(0)}
                   </span>
                 </div>
@@ -923,20 +942,20 @@ export default function CustomerMenu() {
                 {/* Description */}
 
                 {item.description && (
-                  <p className="mt-3 text-sm sm:text-base text-white/75 leading-relaxed max-w-xl">
+                  <p className="mt-2 text-xs sm:text-sm text-white/75 leading-relaxed max-w-xl">
                     {item.description}
                   </p>
                 )}
 
                 {/* Actions */}
 
-                <div className="flex flex-wrap items-center gap-2 mt-5">
+                <div className="flex flex-wrap items-center gap-2 mt-4">
                   {restaurant.phone && (
                     <a
                       href={`tel:${restaurant.phone}`}
-                      className="inline-flex items-center gap-2 px-4 py-2.5 rounded-full bg-white text-black text-sm font-semibold hover:bg-white/90 transition"
+                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-full bg-white text-black text-xs sm:text-sm font-semibold hover:bg-white/90 transition"
                     >
-                      <Phone size={16} />
+                      <Phone size={14} />
                       Call
                     </a>
                   )}
@@ -945,9 +964,9 @@ export default function CustomerMenu() {
                     <button
                       type="button"
                       onClick={() => setShowInfo(true)}
-                      className="inline-flex items-center gap-2 px-4 py-2.5 rounded-full bg-black/40 backdrop-blur-md border border-white/15 text-sm font-semibold hover:bg-black/60 transition"
+                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-full bg-black/40 backdrop-blur-md border border-white/15 text-xs sm:text-sm font-semibold hover:bg-black/60 transition"
                     >
-                      <MapPin size={16} />
+                      <MapPin size={14} />
                       Location
                     </button>
                   )}

@@ -27,6 +27,7 @@ export async function getCurrentRestaurant() {
         logo_url,
         pdf_menu_url,
         intro_video_url,
+        background_music_url,
         description,
         phone,
         address,

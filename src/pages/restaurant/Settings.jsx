@@ -14,6 +14,7 @@ import {
   Eye,
   FileText,
   Video,
+  Music,
 } from "lucide-react";
 
 import { supabase } from "../../lib/supabase";
@@ -35,12 +36,14 @@ function Settings() {
     logo_url: "",
     pdf_menu_url: "",
     intro_video_url: "",
+    background_music_url: "",
   });
 
   const [originalForm, setOriginalForm] = useState(null);
 
   const [logoFile, setLogoFile] = useState(null);
   const [introVideoFile, setIntroVideoFile] = useState(null);
+  const [bgMusicFile, setBgMusicFile] = useState(null);
 
   const [loading, setLoading] = useState(true);
 
@@ -48,6 +51,7 @@ function Settings() {
 
   const [uploadingLogo, setUploadingLogo] = useState(false);
   const [uploadingIntroVideo, setUploadingIntroVideo] = useState(false);
+  const [uploadingBgMusic, setUploadingBgMusic] = useState(false);
 
   const [message, setMessage] = useState("");
 
@@ -85,6 +89,7 @@ function Settings() {
         logo_url: restaurant.logo_url || "",
         pdf_menu_url: restaurant.pdf_menu_url || "",
         intro_video_url: restaurant.intro_video_url || "",
+        background_music_url: restaurant.background_music_url || "",
       };
 
       setRestaurantId(restaurant.id);
@@ -270,6 +275,47 @@ function Settings() {
   }
 
   // =========================================
+  // BACKGROUND MUSIC UPLOAD
+  // =========================================
+
+  async function handleBgMusicUpload(file) {
+    if (!file || !restaurantId) return;
+
+    if (!file.type.startsWith("audio/")) {
+      setError("Please select a valid audio file.");
+      return;
+    }
+
+    if (file.size > 20 * 1024 * 1024) {
+      setError("Audio must be smaller than 20MB.");
+      return;
+    }
+
+    try {
+      setUploadingBgMusic(true);
+      setError("");
+      setMessage("");
+
+      const url = await uploadMenuMedia(file, restaurantId, "music");
+
+      setForm((prev) => ({ ...prev, background_music_url: url }));
+      setBgMusicFile(file);
+      setMessage("Background music uploaded successfully. Save your changes to keep it.");
+    } catch (error) {
+      console.error("Audio upload error:", error);
+      setError(error?.message || "Unable to upload audio.");
+    } finally {
+      setUploadingBgMusic(false);
+    }
+  }
+
+  function removeBgMusic() {
+    setForm((prev) => ({ ...prev, background_music_url: "" }));
+    setBgMusicFile(null);
+    setMessage("");
+  }
+
+  // =========================================
   // RESET
   // =========================================
 
@@ -285,6 +331,7 @@ function Settings() {
     setLogoFile(null);
     setPdfFile(null);
     setIntroVideoFile(null);
+    setBgMusicFile(null);
     setMessage("");
     setError("");
   }
@@ -365,6 +412,7 @@ function Settings() {
           logo_url: form.logo_url || null,
           pdf_menu_url: form.pdf_menu_url || null,
           intro_video_url: form.intro_video_url || null,
+          background_music_url: form.background_music_url || null,
         })
         .eq("id", restaurantId);
 
@@ -394,6 +442,14 @@ function Settings() {
         originalForm.intro_video_url !== form.intro_video_url
       ) {
         await deleteMenuMedia(originalForm.intro_video_url);
+      }
+
+      if (
+        originalForm &&
+        originalForm.background_music_url &&
+        originalForm.background_music_url !== form.background_music_url
+      ) {
+        await deleteMenuMedia(originalForm.background_music_url);
       }
 
       const savedForm = {
@@ -841,6 +897,76 @@ function Settings() {
 
                 <p className="text-xs text-gray-400 mt-3">
                   MP4, MOV, or WebM. Maximum 50MB. Vertical (9:16) format works best.
+                </p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* =========================================
+            BACKGROUND MUSIC
+        ========================================== */}
+
+        <section className="bg-white border rounded-2xl overflow-hidden">
+          <div className="px-6 py-5 border-b">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-lg bg-gray-100 flex items-center justify-center">
+                <Music size={18} />
+              </div>
+
+              <div>
+                <h2 className="font-semibold text-lg">Background Music</h2>
+
+                <p className="text-sm text-gray-500 mt-1">
+                  Audio that plays continuously while customers browse your menu.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="p-6">
+            <div className="flex flex-col sm:flex-row items-start gap-6">
+              <div className="shrink-0">
+                <div className="w-28 h-28 rounded-2xl bg-gray-100 border flex items-center justify-center overflow-hidden">
+                  {form.background_music_url ? (
+                    <audio src={form.background_music_url} controls className="w-24 h-10 object-cover" />
+                  ) : (
+                    <Music size={32} className="text-gray-400" />
+                  )}
+                </div>
+              </div>
+
+              <div>
+                <label className="inline-flex items-center gap-2 bg-black text-white px-4 py-3 rounded-xl cursor-pointer hover:bg-gray-800 transition font-medium">
+                  <Upload size={17} />
+
+                  {uploadingBgMusic ? "Uploading..." : "Upload Music"}
+
+                  <input
+                    type="file"
+                    accept="audio/mpeg,audio/wav,audio/aac,audio/ogg"
+                    className="hidden"
+                    disabled={uploadingBgMusic}
+                    onChange={(e) => handleBgMusicUpload(e.target.files?.[0])}
+                  />
+                </label>
+
+                {form.background_music_url && (
+                  <button
+                    type="button"
+                    onClick={removeBgMusic}
+                    className="ml-2 px-4 py-3 rounded-xl border text-sm font-medium hover:bg-gray-50 text-red-600"
+                  >
+                    Remove
+                  </button>
+                )}
+
+                {bgMusicFile && (
+                  <p className="text-xs text-gray-500 mt-3">{bgMusicFile.name}</p>
+                )}
+
+                <p className="text-xs text-gray-400 mt-3">
+                  MP3 or WAV. Maximum 20MB.
                 </p>
               </div>
             </div>
