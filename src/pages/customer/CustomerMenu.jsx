@@ -54,6 +54,9 @@ export default function CustomerMenu() {
   const sectionRefs = useRef({});
   const endScreenRef = useRef(null);
   const bgMusicRef = useRef(null);
+  
+  // Prevents dish videos from playing while welcome screen or intro video is active
+  const isMenuInteractiveRef = useRef(false);
 
   // =========================================
   // LOAD RESTAURANT + MENU
@@ -115,6 +118,9 @@ export default function CustomerMenu() {
 
       if (restaurantData.intro_video_url || restaurantData.background_music_url) {
         setShowWelcomeScreen(true);
+        isMenuInteractiveRef.current = false;
+      } else {
+        isMenuInteractiveRef.current = true;
       }
 
       // -----------------------------------------
@@ -285,6 +291,10 @@ export default function CustomerMenu() {
   // =========================================
 
   function playActiveVideo(index) {
+    if (!isMenuInteractiveRef.current) {
+      return;
+    }
+
     const item = items[index];
 
     if (!item) {
@@ -617,6 +627,9 @@ export default function CustomerMenu() {
               setShowWelcomeScreen(false);
               if (restaurant.intro_video_url) {
                 setIntroPlaying(true);
+              } else {
+                isMenuInteractiveRef.current = true;
+                playActiveVideo(activeIndex);
               }
               if (bgMusicRef.current) {
                 bgMusicRef.current.play().catch(console.error);
@@ -647,6 +660,7 @@ export default function CustomerMenu() {
               setIntroFading(true);
               setTimeout(() => {
                 setIntroPlaying(false);
+                isMenuInteractiveRef.current = true;
                 playActiveVideo(activeIndex);
               }, 1000);
             }}
@@ -658,6 +672,7 @@ export default function CustomerMenu() {
               setIntroFading(true);
               setTimeout(() => {
                 setIntroPlaying(false);
+                isMenuInteractiveRef.current = true;
                 playActiveVideo(activeIndex);
               }, 1000);
             }}
