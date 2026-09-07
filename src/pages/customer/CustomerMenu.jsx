@@ -116,12 +116,9 @@ export default function CustomerMenu() {
       }
       setRestaurant(restaurantData);
 
-      if (restaurantData.intro_video_url || restaurantData.background_music_url) {
-        setShowWelcomeScreen(true);
-        isMenuInteractiveRef.current = false;
-      } else {
-        isMenuInteractiveRef.current = true;
-      }
+      // Always show welcome screen to ensure user interaction (required for iOS Safari audio)
+      setShowWelcomeScreen(true);
+      isMenuInteractiveRef.current = false;
 
       // -----------------------------------------
       // AVAILABLE MENU ITEMS
@@ -624,12 +621,27 @@ export default function CustomerMenu() {
           </p>
           <button
             onClick={() => {
+              // Unlock audio for all videos to allow unmuted autoplay on iOS Safari
+              Object.values(videoRefs.current).forEach((video) => {
+                if (video) {
+                  video.muted = muted;
+                  video.play().catch(() => {});
+                  video.pause();
+                }
+              });
+              if (bgMusicRef.current) {
+                bgMusicRef.current.play().catch(() => {});
+                bgMusicRef.current.pause();
+              }
+
               setShowWelcomeScreen(false);
               if (restaurant.intro_video_url) {
                 setIntroPlaying(true);
               } else {
                 isMenuInteractiveRef.current = true;
-                playActiveVideo(activeIndex);
+                setTimeout(() => {
+                  playActiveVideo(activeIndex);
+                }, 50);
                 if (bgMusicRef.current) {
                   bgMusicRef.current.play().catch(console.error);
                 }
@@ -672,6 +684,19 @@ export default function CustomerMenu() {
           
           <button
             onClick={() => {
+              // Unlock audio for all videos to allow unmuted autoplay on iOS Safari
+              Object.values(videoRefs.current).forEach((video) => {
+                if (video) {
+                  video.muted = muted;
+                  video.play().catch(() => {});
+                  video.pause();
+                }
+              });
+              if (bgMusicRef.current) {
+                bgMusicRef.current.play().catch(() => {});
+                bgMusicRef.current.pause();
+              }
+
               setIntroFading(true);
               setTimeout(() => {
                 setIntroPlaying(false);
