@@ -271,6 +271,13 @@ export default function CustomerMenu() {
         video.muted = nextMuted;
       }
     });
+
+    if (bgMusicRef.current) {
+      bgMusicRef.current.muted = nextMuted;
+      if (!nextMuted) {
+        bgMusicRef.current.play().catch(() => {});
+      }
+    }
   }
 
   // =========================================
@@ -313,9 +320,19 @@ export default function CustomerMenu() {
       .then(() => {
         setPaused(false);
       })
-      .catch(() => {
-        // Browser autoplay restriction.
-        setPaused(true);
+      .catch((err) => {
+        console.log("Unmuted play failed, falling back to muted:", err);
+        // Browser autoplay restriction. Fall back to muted!
+        video.muted = true;
+        video
+          .play()
+          .then(() => {
+            setPaused(false);
+            setMuted(true); // Update global state to reflect muted playback
+          })
+          .catch(() => {
+            setPaused(true);
+          });
       });
   }
 
@@ -669,15 +686,19 @@ export default function CustomerMenu() {
 
       <div
         className={`fixed inset-0 z-50 bg-black flex items-center justify-center transition-all duration-1000 ease-[cubic-bezier(0.87,0,0.13,1)] ${
-          introFading ? "opacity-0 scale-110 pointer-events-none" : "opacity-100 scale-100"
+          introPlaying || introFading ? "opacity-100 scale-100" : "opacity-0 scale-110 pointer-events-none"
         }`}
-        style={{ display: introPlaying || introFading ? "flex" : "none" }}
+        style={{
+          visibility: introPlaying || introFading ? "visible" : "hidden",
+          pointerEvents: introPlaying || introFading ? "auto" : "none",
+        }}
       >
           <video
             ref={introVideoRef}
             src={restaurant.intro_video_url}
             autoPlay
             playsInline
+            preload="auto"
             onEnded={() => {
               setIntroFading(true);
               setTimeout(() => {
