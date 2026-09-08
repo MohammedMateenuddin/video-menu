@@ -614,6 +614,10 @@ export default function CustomerMenu() {
           src={restaurant.background_music_url}
           loop
           muted={muted}
+          onEnded={(e) => {
+            e.target.currentTime = 0;
+            e.target.play().catch(console.error);
+          }}
         />
       )}
 
@@ -649,6 +653,15 @@ export default function CustomerMenu() {
                 if (introVideoRef.current) {
                   introVideoRef.current.muted = false;
                   introVideoRef.current.play().catch(console.error);
+                }
+                
+                // Force iOS to preload the dish video while intro plays
+                const activeItem = items[activeIndex];
+                if (activeItem) {
+                  const video = videoRefs.current[activeItem.id];
+                  if (video) {
+                    video.load();
+                  }
                 }
               } else {
                 isMenuInteractiveRef.current = true;
@@ -701,13 +714,16 @@ export default function CustomerMenu() {
             preload="auto"
             onEnded={() => {
               setIntroFading(true);
+              
+              isMenuInteractiveRef.current = true;
+              playActiveVideo(activeIndex);
+              
+              if (bgMusicRef.current) {
+                bgMusicRef.current.play().catch(console.error);
+              }
+
               setTimeout(() => {
                 setIntroPlaying(false);
-                isMenuInteractiveRef.current = true;
-                playActiveVideo(activeIndex);
-                if (bgMusicRef.current) {
-                  bgMusicRef.current.play().catch(console.error);
-                }
               }, 1000);
             }}
             className="w-full h-full object-cover"
@@ -778,6 +794,10 @@ export default function CustomerMenu() {
                 playsInline
                 preload={isActive ? "auto" : "metadata"}
                 loop
+                onEnded={(e) => {
+                  e.target.currentTime = 0;
+                  e.target.play().catch(console.error);
+                }}
                 onTimeUpdate={(event) => handleVideoTimeUpdate(event, index)}
                 onPlay={() => handleVideoPlay(index)}
                 onClick={() => togglePlay(item.id)}
