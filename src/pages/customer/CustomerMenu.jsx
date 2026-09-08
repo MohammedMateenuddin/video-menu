@@ -15,6 +15,7 @@ import {
   ArrowRight,
   RefreshCw,
   FileText,
+  Instagram,
 } from "lucide-react";
 
 import { supabase } from "../../lib/supabase";
@@ -39,7 +40,7 @@ export default function CustomerMenu() {
   const [activeIndex, setActiveIndex] = useState(0);
   const [videoProgress, setVideoProgress] = useState(0);
 
-  const [muted, setMuted] = useState(false);
+  const [muted, setMuted] = useState(true);
   const [paused, setPaused] = useState(false);
 
   const [isEndScreen, setIsEndScreen] = useState(false);
@@ -54,6 +55,7 @@ export default function CustomerMenu() {
   const sectionRefs = useRef({});
   const endScreenRef = useRef(null);
   const bgMusicRef = useRef(null);
+  const introVideoRef = useRef(null);
   
   // Prevents dish videos from playing while welcome screen or intro video is active
   const isMenuInteractiveRef = useRef(false);
@@ -621,28 +623,31 @@ export default function CustomerMenu() {
           </p>
           <button
             onClick={() => {
-              // Unlock audio for all videos to allow unmuted autoplay on iOS Safari
-              Object.values(videoRefs.current).forEach((video) => {
-                if (video) {
-                  video.muted = muted;
-                  video.play().catch(() => {});
-                  video.pause();
-                }
-              });
-              if (bgMusicRef.current) {
-                bgMusicRef.current.play().catch(() => {});
-                bgMusicRef.current.pause();
-              }
+              setMuted(false); // Enable global sound since user clicked
 
               setShowWelcomeScreen(false);
+              
               if (restaurant.intro_video_url) {
                 setIntroPlaying(true);
+                if (introVideoRef.current) {
+                  introVideoRef.current.muted = false;
+                  introVideoRef.current.play().catch(console.error);
+                }
               } else {
                 isMenuInteractiveRef.current = true;
-                setTimeout(() => {
-                  playActiveVideo(activeIndex);
-                }, 50);
+                
+                // Synchronously play the active video unmuted to grant Safari autoplay permissions
+                const activeItem = items[activeIndex];
+                if (activeItem) {
+                  const video = videoRefs.current[activeItem.id];
+                  if (video) {
+                    video.muted = false;
+                    video.play().then(() => setPaused(false)).catch(() => setPaused(true));
+                  }
+                }
+
                 if (bgMusicRef.current) {
+                  bgMusicRef.current.muted = false;
                   bgMusicRef.current.play().catch(console.error);
                 }
               }
@@ -658,13 +663,18 @@ export default function CustomerMenu() {
           INTRO OVERLAY
       ========================================== */}
 
-      {introPlaying && (
-        <div
-          className={`fixed inset-0 z-50 bg-black flex items-center justify-center transition-all duration-1000 ease-[cubic-bezier(0.87,0,0.13,1)] ${
-            introFading ? "opacity-0 scale-110 pointer-events-none" : "opacity-100 scale-100"
-          }`}
-        >
+      {/* =========================================
+          INTRO OVERLAY
+      ========================================== */}
+
+      <div
+        className={`fixed inset-0 z-50 bg-black flex items-center justify-center transition-all duration-1000 ease-[cubic-bezier(0.87,0,0.13,1)] ${
+          introFading ? "opacity-0 scale-110 pointer-events-none" : "opacity-100 scale-100"
+        }`}
+        style={{ display: introPlaying || introFading ? "flex" : "none" }}
+      >
           <video
+            ref={introVideoRef}
             src={restaurant.intro_video_url}
             autoPlay
             playsInline
@@ -684,27 +694,26 @@ export default function CustomerMenu() {
           
           <button
             onClick={() => {
-              // Unlock audio for all videos to allow unmuted autoplay on iOS Safari
-              Object.values(videoRefs.current).forEach((video) => {
+              setIntroFading(true);
+              
+              // Grant unmuted autoplay by starting the video synchronously during the click!
+              isMenuInteractiveRef.current = true;
+              const activeItem = items[activeIndex];
+              if (activeItem) {
+                const video = videoRefs.current[activeItem.id];
                 if (video) {
-                  video.muted = muted;
-                  video.play().catch(() => {});
-                  video.pause();
+                  video.muted = false; // ensure unmuted
+                  video.play().then(() => setPaused(false)).catch(() => setPaused(true));
                 }
-              });
-              if (bgMusicRef.current) {
-                bgMusicRef.current.play().catch(() => {});
-                bgMusicRef.current.pause();
               }
 
-              setIntroFading(true);
+              if (bgMusicRef.current) {
+                bgMusicRef.current.muted = false;
+                bgMusicRef.current.play().catch(console.error);
+              }
+
               setTimeout(() => {
                 setIntroPlaying(false);
-                isMenuInteractiveRef.current = true;
-                playActiveVideo(activeIndex);
-                if (bgMusicRef.current) {
-                  bgMusicRef.current.play().catch(console.error);
-                }
               }, 1000);
             }}
             className="absolute bottom-10 right-6 px-4 py-2 bg-white/20 backdrop-blur-md text-white rounded-full text-sm font-medium border border-white/20 z-10"
@@ -712,7 +721,6 @@ export default function CustomerMenu() {
             Skip Intro
           </button>
         </div>
-      )}
 
       {/* =========================================
           MENU ITEMS
@@ -844,6 +852,18 @@ export default function CustomerMenu() {
                         </div>
                       )}
                     </div>
+                  )}
+
+                  {restaurant.instagram_url && (
+                    <a
+                      href={restaurant.instagram_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      aria-label="Instagram"
+                      className="w-10 h-10 rounded-full bg-black/40 backdrop-blur-md border border-white/10 flex items-center justify-center hover:bg-black/60 transition"
+                    >
+                      <Instagram size={18} />
+                    </a>
                   )}
 
                   <button

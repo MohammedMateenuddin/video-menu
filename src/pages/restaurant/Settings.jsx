@@ -15,6 +15,7 @@ import {
   FileText,
   Video,
   Music,
+  Instagram,
 } from "lucide-react";
 
 import { supabase } from "../../lib/supabase";
@@ -37,6 +38,7 @@ function Settings() {
     pdf_menu_url: "",
     intro_video_url: "",
     background_music_url: "",
+    instagram_url: "",
   });
 
   const [originalForm, setOriginalForm] = useState(null);
@@ -90,6 +92,7 @@ function Settings() {
         pdf_menu_url: restaurant.pdf_menu_url || "",
         intro_video_url: restaurant.intro_video_url || "",
         background_music_url: restaurant.background_music_url || "",
+        instagram_url: restaurant.instagram_url || "",
       };
 
       setRestaurantId(restaurant.id);
@@ -413,6 +416,7 @@ function Settings() {
           pdf_menu_url: form.pdf_menu_url || null,
           intro_video_url: form.intro_video_url || null,
           background_music_url: form.background_music_url || null,
+          instagram_url: form.instagram_url?.trim() || null,
         })
         .eq("id", restaurantId);
 
@@ -676,6 +680,23 @@ function Settings() {
                   placeholder="Restaurant address"
                 />
               </div>
+            </div>
+
+            {/* INSTAGRAM */}
+            <div className="mt-5">
+              <label className="flex items-center gap-2 text-sm font-medium mb-2">
+                <Instagram size={15} />
+                Instagram URL
+              </label>
+
+              <input
+                name="instagram_url"
+                value={form.instagram_url}
+                onChange={handleChange}
+                type="url"
+                className="w-full border rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-black/10 focus:border-black"
+                placeholder="https://instagram.com/yourrestaurant"
+              />
             </div>
           </div>
         </section>
