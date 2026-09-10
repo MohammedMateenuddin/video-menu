@@ -692,12 +692,16 @@ export default function CustomerMenu() {
             onClick={() => {
               setMuted(false);
 
+              if (restaurant.intro_video_url) {
+                // Show intro overlay BEFORE hiding welcome screen to prevent flash
+                setIntroPlaying(true);
+              }
+
               setShowWelcomeScreen(false);
               
               if (restaurant.intro_video_url) {
                 // Don't start bgMusic yet — the intro video has its own audio.
                 // bgMusic will start when the intro ends (in onEnded).
-                setIntroPlaying(true);
                 if (introVideoRef.current) {
                   introVideoRef.current.muted = false;
                   introVideoRef.current.play().catch(console.error);
