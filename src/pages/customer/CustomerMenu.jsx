@@ -15,8 +15,18 @@ import {
   ArrowRight,
   RefreshCw,
   FileText,
-  Instagram,
 } from "lucide-react";
+
+// Instagram icon SVG — not available in this version of lucide-react
+function InstagramIcon({ size = 24 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="2" width="20" height="20" rx="5" ry="5" />
+      <circle cx="12" cy="12" r="5" />
+      <circle cx="17.5" cy="6.5" r="1.5" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
 
 import { supabase } from "../../lib/supabase";
 
@@ -1006,7 +1016,7 @@ export default function CustomerMenu() {
                       aria-label="Instagram"
                       className="w-10 h-10 rounded-full bg-black/40 backdrop-blur-md border border-white/10 flex items-center justify-center hover:bg-black/60 transition"
                     >
-                      <Instagram size={18} />
+                      <InstagramIcon size={18} />
                     </a>
                   )}
 
