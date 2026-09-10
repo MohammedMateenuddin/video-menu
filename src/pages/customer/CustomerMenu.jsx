@@ -766,12 +766,15 @@ export default function CustomerMenu() {
       ========================================== */}
 
       <div
-        className={`fixed inset-0 z-50 bg-black flex items-center justify-center transition-all duration-1000 ease-[cubic-bezier(0.87,0,0.13,1)] ${
-          introPlaying || introFading ? "opacity-100 scale-100" : "opacity-0 scale-110 pointer-events-none"
+        className={`fixed inset-0 z-[60] bg-black flex items-center justify-center ${
+          introFading
+            ? "opacity-0 scale-110 pointer-events-none transition-all duration-1000 ease-[cubic-bezier(0.87,0,0.13,1)]"
+            : introPlaying
+              ? "opacity-100 scale-100"
+              : "opacity-0 pointer-events-none"
         }`}
         style={{
           visibility: introPlaying || introFading ? "visible" : "hidden",
-          pointerEvents: introPlaying || introFading ? "auto" : "none",
         }}
       >
           <video
