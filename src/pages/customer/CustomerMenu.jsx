@@ -827,6 +827,12 @@ export default function CustomerMenu() {
           
           <button
             onClick={() => {
+              // Stop intro video audio immediately
+              if (introVideoRef.current) {
+                introVideoRef.current.pause();
+                introVideoRef.current.muted = true;
+              }
+
               setIntroFading(true);
               
               isMenuInteractiveRef.current = true;
@@ -861,7 +867,7 @@ export default function CustomerMenu() {
                 }
               }
 
-              // Start bgMusic — user tapped, so iOS allows it
+              // Start bgMusic — intro is stopped, audio session is free
               if (bgMusicRef.current) {
                 bgMusicRef.current.muted = false;
                 bgMusicRef.current.play().catch(console.error);
