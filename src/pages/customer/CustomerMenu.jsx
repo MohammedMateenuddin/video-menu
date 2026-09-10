@@ -266,12 +266,9 @@ export default function CustomerMenu() {
 
     setMuted(nextMuted);
 
-    Object.values(videoRefs.current).forEach((video) => {
-      if (video) {
-        video.muted = nextMuted;
-      }
-    });
-
+    // Dish videos are always muted on the element level.
+    // Sound comes exclusively from the background music audio element
+    // to avoid iOS Safari's single-audio-session conflict.
     if (bgMusicRef.current) {
       bgMusicRef.current.muted = nextMuted;
       if (!nextMuted) {
@@ -380,6 +377,30 @@ export default function CustomerMenu() {
           setVideoProgress(0);
           setPaused(false);
 
+          // Dynamically load src for active video and neighbors,
+          // unload all others to stay within iOS memory limits.
+          items.forEach((it, i) => {
+            const video = videoRefs.current[it.id];
+            if (!video) return;
+
+            const isNearby = Math.abs(i - index) <= 1; // active ± 1
+
+            if (isNearby) {
+              // Load src if not already set
+              if (!video.src || !video.src.includes(it.video_url)) {
+                video.src = it.video_url;
+                video.load();
+              }
+            } else {
+              // Unload far-away videos to free iOS memory
+              if (video.src) {
+                video.pause();
+                video.removeAttribute("src");
+                video.load(); // resets the element
+              }
+            }
+          });
+
           // Pause every other video.
           Object.entries(videoRefs.current).forEach(([videoId, video]) => {
             const otherIndex = items.findIndex((item) => item.id === videoId);
@@ -390,9 +411,23 @@ export default function CustomerMenu() {
           });
 
           // Start active video.
-          setTimeout(() => {
-            playActiveVideo(index);
-          }, 50);
+          const activeItem = items[index];
+          if (activeItem) {
+            const video = videoRefs.current[activeItem.id];
+            if (video) {
+              // Ensure src is loaded before playing
+              const tryPlay = () => {
+                video.muted = true; // always muted — audio comes from bgMusic
+                video.play().then(() => setPaused(false)).catch(() => setPaused(true));
+              };
+
+              if (video.readyState >= 2) {
+                tryPlay();
+              } else {
+                video.addEventListener("canplay", tryPlay, { once: true });
+              }
+            }
+          }
         });
       },
       {
@@ -413,7 +448,7 @@ export default function CustomerMenu() {
     return () => {
       observer.disconnect();
     };
-  }, [items, muted]);
+  }, [items]);
 
   // =========================================
   // RESET WHEN MENU LOADS
@@ -613,8 +648,9 @@ export default function CustomerMenu() {
           ref={bgMusicRef}
           src={restaurant.background_music_url}
           loop
-          muted={muted}
+          preload="auto"
           onEnded={(e) => {
+            // Safety net: manually restart if loop fails on iOS
             e.target.currentTime = 0;
             e.target.play().catch(console.error);
           }}
@@ -644,7 +680,14 @@ export default function CustomerMenu() {
           </p>
           <button
             onClick={() => {
-              setMuted(false); // Enable global sound since user clicked
+              setMuted(false);
+
+              // Start background music immediately during the user tap
+              // so iOS grants the audio session to this element.
+              if (bgMusicRef.current) {
+                bgMusicRef.current.muted = false;
+                bgMusicRef.current.play().catch(console.error);
+              }
 
               setShowWelcomeScreen(false);
               
@@ -655,30 +698,40 @@ export default function CustomerMenu() {
                   introVideoRef.current.play().catch(console.error);
                 }
                 
-                // Force iOS to preload the dish video while intro plays
+                // Preload the first dish video while intro plays
                 const activeItem = items[activeIndex];
                 if (activeItem) {
                   const video = videoRefs.current[activeItem.id];
-                  if (video) {
+                  if (video && activeItem.video_url) {
+                    video.src = activeItem.video_url;
                     video.load();
                   }
                 }
               } else {
                 isMenuInteractiveRef.current = true;
                 
-                // Synchronously play the active video unmuted to grant Safari autoplay permissions
+                // Load and play the first dish video (muted — audio is from bgMusic)
                 const activeItem = items[activeIndex];
                 if (activeItem) {
                   const video = videoRefs.current[activeItem.id];
-                  if (video) {
-                    video.muted = false;
-                    video.play().then(() => setPaused(false)).catch(() => setPaused(true));
+                  if (video && activeItem.video_url) {
+                    video.src = activeItem.video_url;
+                    video.muted = true;
+                    video.load();
+                    video.addEventListener("canplay", () => {
+                      video.play().then(() => setPaused(false)).catch(() => setPaused(true));
+                    }, { once: true });
                   }
                 }
 
-                if (bgMusicRef.current) {
-                  bgMusicRef.current.muted = false;
-                  bgMusicRef.current.play().catch(console.error);
+                // Also preload the next video
+                const nextItem = items[activeIndex + 1];
+                if (nextItem) {
+                  const nextVideo = videoRefs.current[nextItem.id];
+                  if (nextVideo && nextItem.video_url) {
+                    nextVideo.src = nextItem.video_url;
+                    nextVideo.load();
+                  }
                 }
               }
             }}
@@ -716,10 +769,36 @@ export default function CustomerMenu() {
               setIntroFading(true);
               
               isMenuInteractiveRef.current = true;
-              playActiveVideo(activeIndex);
-              
-              if (bgMusicRef.current) {
-                bgMusicRef.current.play().catch(console.error);
+
+              // Play the first dish video (muted — audio comes from bgMusic)
+              const activeItem = items[activeIndex];
+              if (activeItem) {
+                const video = videoRefs.current[activeItem.id];
+                if (video) {
+                  video.muted = true;
+                  if (video.readyState >= 2) {
+                    video.play().then(() => setPaused(false)).catch(() => setPaused(true));
+                  } else {
+                    video.addEventListener("canplay", () => {
+                      video.play().then(() => setPaused(false)).catch(() => setPaused(true));
+                    }, { once: true });
+                    // Ensure src is set
+                    if (!video.src && activeItem.video_url) {
+                      video.src = activeItem.video_url;
+                      video.load();
+                    }
+                  }
+                }
+              }
+
+              // Also preload the next video
+              const nextItem = items[activeIndex + 1];
+              if (nextItem) {
+                const nextVideo = videoRefs.current[nextItem.id];
+                if (nextVideo && nextItem.video_url && !nextVideo.src) {
+                  nextVideo.src = nextItem.video_url;
+                  nextVideo.load();
+                }
               }
 
               setTimeout(() => {
@@ -733,20 +812,36 @@ export default function CustomerMenu() {
             onClick={() => {
               setIntroFading(true);
               
-              // Grant unmuted autoplay by starting the video synchronously during the click!
               isMenuInteractiveRef.current = true;
+
+              // Play dish video muted — audio is from bgMusic only
               const activeItem = items[activeIndex];
               if (activeItem) {
                 const video = videoRefs.current[activeItem.id];
                 if (video) {
-                  video.muted = false; // ensure unmuted
-                  video.play().then(() => setPaused(false)).catch(() => setPaused(true));
+                  video.muted = true;
+                  if (!video.src && activeItem.video_url) {
+                    video.src = activeItem.video_url;
+                    video.load();
+                  }
+                  if (video.readyState >= 2) {
+                    video.play().then(() => setPaused(false)).catch(() => setPaused(true));
+                  } else {
+                    video.addEventListener("canplay", () => {
+                      video.play().then(() => setPaused(false)).catch(() => setPaused(true));
+                    }, { once: true });
+                  }
                 }
               }
 
-              if (bgMusicRef.current) {
-                bgMusicRef.current.muted = false;
-                bgMusicRef.current.play().catch(console.error);
+              // Preload next
+              const nextItem = items[activeIndex + 1];
+              if (nextItem) {
+                const nextVideo = videoRefs.current[nextItem.id];
+                if (nextVideo && nextItem.video_url && !nextVideo.src) {
+                  nextVideo.src = nextItem.video_url;
+                  nextVideo.load();
+                }
               }
 
               setTimeout(() => {
@@ -788,16 +883,11 @@ export default function CustomerMenu() {
             {hasVideo ? (
               <video
                 ref={(element) => setVideoRef(item.id, element)}
-                src={item.video_url}
                 poster={item.image_url || undefined}
-                muted={muted}
+                muted
                 playsInline
-                preload={isActive ? "auto" : "metadata"}
+                preload="none"
                 loop
-                onEnded={(e) => {
-                  e.target.currentTime = 0;
-                  e.target.play().catch(console.error);
-                }}
                 onTimeUpdate={(event) => handleVideoTimeUpdate(event, index)}
                 onPlay={() => handleVideoPlay(index)}
                 onClick={() => togglePlay(item.id)}
