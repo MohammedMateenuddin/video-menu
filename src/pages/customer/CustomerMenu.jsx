@@ -682,16 +682,11 @@ export default function CustomerMenu() {
             onClick={() => {
               setMuted(false);
 
-              // Start background music immediately during the user tap
-              // so iOS grants the audio session to this element.
-              if (bgMusicRef.current) {
-                bgMusicRef.current.muted = false;
-                bgMusicRef.current.play().catch(console.error);
-              }
-
               setShowWelcomeScreen(false);
               
               if (restaurant.intro_video_url) {
+                // Don't start bgMusic yet — the intro video has its own audio.
+                // bgMusic will start when the intro ends (in onEnded).
                 setIntroPlaying(true);
                 if (introVideoRef.current) {
                   introVideoRef.current.muted = false;
@@ -732,6 +727,12 @@ export default function CustomerMenu() {
                     nextVideo.src = nextItem.video_url;
                     nextVideo.load();
                   }
+                }
+
+                // Start bgMusic — no intro, so start it now
+                if (bgMusicRef.current) {
+                  bgMusicRef.current.muted = false;
+                  bgMusicRef.current.play().catch(console.error);
                 }
               }
             }}
@@ -801,6 +802,12 @@ export default function CustomerMenu() {
                 }
               }
 
+              // NOW start bgMusic — intro is done, audio session is free
+              if (bgMusicRef.current) {
+                bgMusicRef.current.muted = false;
+                bgMusicRef.current.play().catch(console.error);
+              }
+
               setTimeout(() => {
                 setIntroPlaying(false);
               }, 1000);
@@ -842,6 +849,12 @@ export default function CustomerMenu() {
                   nextVideo.src = nextItem.video_url;
                   nextVideo.load();
                 }
+              }
+
+              // Start bgMusic — user tapped, so iOS allows it
+              if (bgMusicRef.current) {
+                bgMusicRef.current.muted = false;
+                bgMusicRef.current.play().catch(console.error);
               }
 
               setTimeout(() => {
