@@ -387,57 +387,68 @@ export default function CustomerMenu() {
           setVideoProgress(0);
           setPaused(false);
 
-          // Dynamically load src for active video and neighbors,
-          // unload all others to stay within iOS memory limits.
-          items.forEach((it, i) => {
-            const video = videoRefs.current[it.id];
-            if (!video) return;
-
-            const isNearby = Math.abs(i - index) <= 1; // active ± 1
-
-            if (isNearby) {
-              // Load src if not already set
-              if (!video.src || !video.src.includes(it.video_url)) {
-                video.src = it.video_url;
-                video.load();
-              }
-            } else {
-              // Unload far-away videos to free iOS memory
-              if (video.src) {
-                video.pause();
-                video.removeAttribute("src");
-                video.load(); // resets the element
-              }
-            }
-          });
-
-          // Pause every other video.
+          // 1. Immediately pause ALL other videos to stop their decoding threads.
           Object.entries(videoRefs.current).forEach(([videoId, video]) => {
             const otherIndex = items.findIndex((item) => item.id === videoId);
-
             if (otherIndex !== index) {
               video.pause();
             }
           });
 
-          // Start active video.
-          const activeItem = items[index];
-          if (activeItem) {
-            const video = videoRefs.current[activeItem.id];
-            if (video) {
-              // Ensure src is loaded before playing
-              const tryPlay = () => {
-                video.muted = true; // always muted — audio comes from bgMusic
-                video.play().then(() => setPaused(false)).catch(() => setPaused(true));
-              };
+          // 2. Debounce the heavy lifting (loading/unloading src) to avoid thrashing during fast swipes.
+          if (window.scrollDebounceTimeout) {
+            clearTimeout(window.scrollDebounceTimeout);
+          }
 
-              if (video.readyState >= 2) {
-                tryPlay();
+          window.scrollDebounceTimeout = setTimeout(() => {
+            // Dynamically load src for active video and neighbors,
+            // unload all others to stay within iOS memory limits.
+            items.forEach((it, i) => {
+              const video = videoRefs.current[it.id];
+              if (!video) return;
+
+              const isNearby = Math.abs(i - index) <= 1; // active ± 1
+
+              if (isNearby) {
+                // Load src if not already set
+                if (!video.src || !video.src.includes(it.video_url)) {
+                  video.src = it.video_url;
+                  video.load();
+                }
               } else {
-                video.addEventListener("canplay", tryPlay, { once: true });
+                // Unload far-away videos to free memory
+                if (video.src) {
+                  video.pause();
+                  video.removeAttribute("src");
+                  video.load(); // resets the element
+                }
+              }
+            });
+
+            // Start active video.
+            const activeItem = items[index];
+            if (activeItem) {
+              const video = videoRefs.current[activeItem.id];
+              if (video) {
+                // Clean up any old canplay listeners (memory leak fix)
+                if (video._canplayListener) {
+                  video.removeEventListener("canplay", video._canplayListener);
+                }
+
+                const tryPlay = () => {
+                  video.muted = true; // always muted — audio comes from bgMusic
+                  video.play().then(() => setPaused(false)).catch(() => setPaused(true));
+                };
+
+                if (video.readyState >= 2) {
+                  tryPlay();
+                } else {
+                  video._canplayListener = tryPlay;
+                  video.addEventListener("canplay", tryPlay, { once: true });
+                }
               }
             }
-          }
+          }, 150); // Wait 150ms after they stop scrolling
         });
       },
       {
