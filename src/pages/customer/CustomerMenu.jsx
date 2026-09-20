@@ -1145,7 +1145,10 @@ export default function CustomerMenu() {
                 DISH INFORMATION
             ========================================== */}
 
-            <div className="absolute left-0 right-0 bottom-0 z-20 px-5 sm:px-7 pb-7 sm:pb-10">
+            <div 
+              className="absolute left-0 right-0 bottom-0 z-20 px-5 sm:px-7 pb-16 sm:pb-20"
+              style={{ paddingBottom: 'max(env(safe-area-inset-bottom, 4rem), 4rem)' }}
+            >
               <div className="max-w-2xl">
                 {/* Category */}
 
