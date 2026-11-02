@@ -10,11 +10,16 @@ import {
   X,
   ExternalLink,
   Store,
+  Shield,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { logout } from "../lib/auth";
-import { getCurrentRestaurant } from "../services/restaurantService";
+import {
+  getCurrentRestaurant,
+  getAllRestaurantsForAdmin,
+  setAdminSelectedRestaurant,
+} from "../services/restaurantService";
 
 function RestaurantLayout() {
   const navigate = useNavigate();
@@ -22,6 +27,8 @@ function RestaurantLayout() {
   const [mobileOpen, setMobileOpen] = useState(false);
 
   const [restaurant, setRestaurant] = useState(null);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [adminRestaurants, setAdminRestaurants] = useState([]);
 
   const [loggingOut, setLoggingOut] = useState(false);
 
@@ -53,6 +60,14 @@ function RestaurantLayout() {
     },
   ];
 
+  if (isAdmin) {
+    navItems.push({
+      name: "Admin Panel",
+      path: "/admin",
+      icon: Shield,
+    });
+  }
+
   // =========================================
   // LOAD RESTAURANT
   // =========================================
@@ -66,6 +81,12 @@ function RestaurantLayout() {
       const data = await getCurrentRestaurant();
 
       setRestaurant(data?.restaurants || null);
+
+      if (data?.isAdmin) {
+        setIsAdmin(true);
+        const list = await getAllRestaurantsForAdmin();
+        setAdminRestaurants(list);
+      }
     } catch (error) {
       console.error("Restaurant layout error:", error);
     }
@@ -165,10 +186,27 @@ function RestaurantLayout() {
                 </div>
               )}
 
-              <div className="min-w-0">
-                <p className="text-sm font-semibold truncate">
-                  {restaurant?.name || "Your Restaurant"}
-                </p>
+              <div className="min-w-0 flex-1">
+                {isAdmin && adminRestaurants.length > 0 ? (
+                  <select
+                    value={restaurant?.id || ""}
+                    onChange={(e) => {
+                      setAdminSelectedRestaurant(e.target.value);
+                      window.location.reload();
+                    }}
+                    className="w-full text-xs font-semibold bg-white border rounded p-1 truncate cursor-pointer"
+                  >
+                    {adminRestaurants.map((r) => (
+                      <option key={r.id} value={r.id}>
+                        {r.name}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <p className="text-sm font-semibold truncate">
+                    {restaurant?.name || "Your Restaurant"}
+                  </p>
+                )}
 
                 <div className="flex items-center gap-1.5 mt-1">
                   <span
@@ -180,7 +218,11 @@ function RestaurantLayout() {
                   />
 
                   <p className="text-xs text-gray-500">
-                    {restaurant?.is_active === false ? "Inactive" : "Active"}
+                    {isAdmin
+                      ? "Admin Mode"
+                      : restaurant?.is_active === false
+                        ? "Inactive"
+                        : "Active"}
                   </p>
                 </div>
               </div>
@@ -323,16 +365,40 @@ function RestaurantLayout() {
             <Menu size={20} />
           </button>
 
-          {/* Desktop title */}
+          {/* Desktop title / switcher */}
 
-          <div className="hidden lg:block">
-            <p className="text-sm font-semibold">
-              {restaurant?.name || "Restaurant Dashboard"}
-            </p>
+          <div className="hidden lg:flex items-center gap-3">
+            {isAdmin && adminRestaurants.length > 0 ? (
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-semibold uppercase tracking-wider px-2 py-0.5 bg-black text-white rounded">
+                  Admin
+                </span>
+                <select
+                  value={restaurant?.id || ""}
+                  onChange={(e) => {
+                    setAdminSelectedRestaurant(e.target.value);
+                    window.location.reload();
+                  }}
+                  className="text-sm font-semibold bg-gray-50 border rounded-lg px-2.5 py-1.5 cursor-pointer outline-none focus:ring-2 focus:ring-black"
+                >
+                  {adminRestaurants.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {r.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ) : (
+              <div>
+                <p className="text-sm font-semibold">
+                  {restaurant?.name || "Restaurant Dashboard"}
+                </p>
 
-            <p className="text-xs text-gray-400 mt-0.5">
-              Manage your VideoMenu
-            </p>
+                <p className="text-xs text-gray-400 mt-0.5">
+                  Manage your VideoMenu
+                </p>
+              </div>
+            )}
           </div>
 
           {/* Mobile brand */}
@@ -348,6 +414,16 @@ function RestaurantLayout() {
           {/* Right side */}
 
           <div className="flex items-center gap-3">
+            {isAdmin && (
+              <NavLink
+                to="/admin"
+                className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-gray-100 hover:bg-gray-200 transition"
+              >
+                <Shield size={14} />
+                Admin Panel
+              </NavLink>
+            )}
+
             {menuUrl && (
               <a
                 href={menuUrl}

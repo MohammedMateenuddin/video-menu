@@ -648,7 +648,11 @@ export default function Restaurants() {
           ) : (
             <div className="divide-y">
               {filteredRestaurants.map((restaurant) => (
-                <RestaurantRow key={restaurant.id} restaurant={restaurant} />
+                <RestaurantRow
+                  key={restaurant.id}
+                  restaurant={restaurant}
+                  navigate={navigate}
+                />
               ))}
             </div>
           )}
@@ -657,7 +661,8 @@ export default function Restaurants() {
     </div>
   );
 }
-function RestaurantRow({ restaurant }) {
+
+function RestaurantRow({ restaurant, navigate }) {
   return (
     <div className="px-5 sm:px-6 py-5 hover:bg-gray-50/70 transition">
       <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
@@ -716,7 +721,20 @@ function RestaurantRow({ restaurant }) {
         </div>
 
         {/* Actions */}
-        <div className="flex items-center gap-2 lg:shrink-0">
+        <div className="flex items-center gap-2 lg:shrink-0 flex-wrap">
+          <button
+            type="button"
+            onClick={() => {
+              localStorage.setItem("admin_selected_restaurant_id", restaurant.id);
+              navigate("/dashboard");
+            }}
+            className="inline-flex items-center justify-center gap-2 px-3 py-2 border rounded-lg text-sm font-medium hover:bg-white transition"
+            title="Open restaurant dashboard"
+          >
+            <LayoutDashboard size={16} />
+            <span className="hidden sm:inline">Dashboard</span>
+          </button>
+
           <a
             href={`/r/${restaurant.slug}`}
             target="_blank"

@@ -13,6 +13,8 @@ import {
   ArrowRight,
   Eye,
   Download,
+  Store,
+  Shield,
 } from "lucide-react";
 
 import {
@@ -47,6 +49,7 @@ function Dashboard() {
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [unassignedState, setUnassignedState] = useState(null);
 
   useEffect(() => {
     loadDashboard();
@@ -60,15 +63,23 @@ function Dashboard() {
     try {
       setLoading(true);
       setError("");
+      setUnassignedState(null);
 
       const restaurantData = await getCurrentRestaurant();
 
       const currentRestaurant = restaurantData?.restaurants;
 
       if (!currentRestaurant?.id) {
-        throw new Error("Unable to determine your restaurant.");
+        setRestaurant(null);
+        setUnassignedState({
+          isAdmin: Boolean(restaurantData?.isAdmin),
+          userEmail: restaurantData?.user?.email,
+        });
+        setLoading(false);
+        return;
       }
 
+      setUnassignedState(null);
       const restaurantId = currentRestaurant.id;
 
       setRestaurant(currentRestaurant);
@@ -203,10 +214,6 @@ function Dashboard() {
 
   const categoryMap = useMemo(() => {
     const map = {};
-
-    // Categories aren't currently stored
-    // in recentItems, so this map can be
-    // populated later if needed.
     return map;
   }, []);
 
@@ -314,6 +321,63 @@ function Dashboard() {
           <div className="lg:col-span-2 h-80 bg-white border rounded-2xl animate-pulse" />
 
           <div className="h-80 bg-white border rounded-2xl animate-pulse" />
+        </div>
+      </div>
+    );
+  }
+
+  // =========================================
+  // UNASSIGNED / NO RESTAURANT STATE
+  // =========================================
+
+  if (unassignedState?.isAdmin) {
+    return (
+      <div className="bg-white border rounded-2xl p-8 sm:p-12 text-center max-w-lg mx-auto my-12 shadow-sm">
+        <div className="w-16 h-16 rounded-2xl bg-gray-100 flex items-center justify-center mx-auto mb-4 text-gray-700">
+          <Store size={32} />
+        </div>
+        <h2 className="text-2xl font-bold text-gray-900">No Restaurants Found</h2>
+        <p className="text-gray-500 mt-2 text-sm leading-relaxed">
+          You are signed in as an administrator, but no restaurants have been created yet on VideoMenu.
+        </p>
+        <div className="mt-6 flex justify-center">
+          <Link
+            to="/admin/restaurants"
+            className="inline-flex items-center gap-2 bg-black text-white px-5 py-3 rounded-xl font-medium hover:bg-gray-800 transition shadow-sm"
+          >
+            <Plus size={18} />
+            Create First Restaurant
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  if (unassignedState) {
+    return (
+      <div className="bg-white border rounded-2xl p-8 sm:p-12 text-center max-w-lg mx-auto my-12 shadow-sm">
+        <div className="w-16 h-16 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center mx-auto mb-4">
+          <Store size={32} />
+        </div>
+        <h2 className="text-2xl font-bold text-gray-900">No Restaurant Assigned</h2>
+        <p className="text-gray-600 mt-3 text-sm leading-relaxed">
+          Your account (<span className="font-semibold text-black">{unassignedState.userEmail || "current user"}</span>) is logged in, but it has not been linked to any restaurant yet.
+        </p>
+        <div className="mt-5 p-4 rounded-xl bg-gray-50 border text-xs text-gray-600 text-left space-y-2">
+          <p className="font-semibold text-gray-800">How to activate your access:</p>
+          <p>1. Contact your VideoMenu administrator.</p>
+          <p>2. Ask them to assign your email (<span className="font-mono text-black">{unassignedState.userEmail}</span>) to your restaurant in the Admin Panel.</p>
+          <p>3. Once assigned, click "Check Again" below.</p>
+        </div>
+        <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+          <button
+            type="button"
+            onClick={loadDashboard}
+            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl border bg-white hover:bg-gray-50 text-sm font-medium transition shadow-sm"
+          >
+            <RefreshCw size={15} />
+            Check Again
+          </button>
         </div>
       </div>
     );

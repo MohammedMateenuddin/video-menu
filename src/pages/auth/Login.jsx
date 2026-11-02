@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { login } from "../../lib/auth";
+import { supabase } from "../../lib/supabase";
 
 function Login() {
   const navigate = useNavigate();
@@ -18,7 +19,22 @@ function Login() {
     setLoading(true);
 
     try {
-      await login(email, password);
+      const authData = await login(email, password);
+      const user = authData?.user;
+
+      if (user) {
+        // Check whether user is an admin
+        const { data: adminUser } = await supabase
+          .from("admin_users")
+          .select("id")
+          .eq("id", user.id)
+          .maybeSingle();
+
+        if (adminUser) {
+          navigate("/admin");
+          return;
+        }
+      }
 
       navigate("/dashboard");
     } catch (error) {
