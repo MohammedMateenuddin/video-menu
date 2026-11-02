@@ -31,6 +31,7 @@ export async function uploadMenuMedia(file, restaurantId, type) {
     body: file,
     headers: {
       'Content-Type': file.type || 'application/octet-stream',
+      'Cache-Control': 'public, max-age=31536000, immutable',
     },
   });
 

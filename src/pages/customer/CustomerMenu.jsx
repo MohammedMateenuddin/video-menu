@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { useParams } from "react-router-dom";
 import {
   Volume2,
@@ -15,6 +15,7 @@ import {
   ArrowRight,
   RefreshCw,
   FileText,
+  Loader2,
 } from "lucide-react";
 
 // Instagram icon SVG — not available in this version of lucide-react
@@ -29,6 +30,19 @@ function InstagramIcon({ size = 24 }) {
 }
 
 import { supabase } from "../../lib/supabase";
+
+// =========================================
+// PERFORMANCE TUNING CONSTANTS
+// =========================================
+
+// How many neighbor videos to keep loaded in memory (active ± this value)
+const PRELOAD_WINDOW = 2;
+
+// Debounce for cleaning up far-away video memory (avoids GC thrash during rapid swipe)
+const CLEANUP_DEBOUNCE_MS = 300;
+
+// Throttle interval (ms) for onTimeUpdate — prevents 60fps re-renders during video playback
+const PROGRESS_THROTTLE_MS = 250;
 
 export default function CustomerMenu() {
   const { restaurantSlug } = useParams();
@@ -61,6 +75,9 @@ export default function CustomerMenu() {
   const [introFading, setIntroFading] = useState(false);
   const [showWelcomeScreen, setShowWelcomeScreen] = useState(false);
 
+  // Per-video buffering state: { [itemId]: true/false }
+  const [bufferingMap, setBufferingMap] = useState({});
+
   const videoRefs = useRef({});
   const sectionRefs = useRef({});
   const endScreenRef = useRef(null);
@@ -69,6 +86,12 @@ export default function CustomerMenu() {
   
   // Prevents dish videos from playing while welcome screen or intro video is active
   const isMenuInteractiveRef = useRef(false);
+
+  // Throttle ref for progress updates (avoids re-creating on each render)
+  const lastProgressUpdateRef = useRef(0);
+
+  // Cleanup debounce timer ref
+  const cleanupDebounceRef = useRef(null);
 
   // =========================================
   // LOAD RESTAURANT + MENU
@@ -192,6 +215,80 @@ export default function CustomerMenu() {
   }
 
   // =========================================
+  // SMART VIDEO PRELOADING & MEMORY MANAGEMENT
+  // =========================================
+
+  /**
+   * Prepares neighbor videos so swiping into them starts playback instantly.
+   * Cleans up videos outside PRELOAD_WINDOW to prevent memory crashes on mobile devices.
+   */
+  const manageVideoSources = useCallback((centerIndex) => {
+    items.forEach((it, i) => {
+      const video = videoRefs.current[it.id];
+      if (!video) return;
+
+      const distance = Math.abs(i - centerIndex);
+      const isNearby = distance <= PRELOAD_WINDOW;
+
+      if (isNearby) {
+        // Ensure source is attached
+        if (!video.src || !video.src.includes(it.video_url)) {
+          video.src = it.video_url;
+        }
+        // Active gets auto preload, neighbors get metadata preloaded
+        video.preload = i === centerIndex ? "auto" : "metadata";
+      } else {
+        // Unload far-away videos to free GPU texture memory
+        if (video.src) {
+          video.pause();
+          video.removeAttribute("src");
+          video.load();
+        }
+      }
+    });
+  }, [items]);
+
+  // =========================================
+  // SAFE PLAY HELPER
+  // =========================================
+
+  /**
+   * Immediately plays a video. If it's buffering, plays as soon as ready.
+   */
+  function safePlay(video, onSuccess, onFail) {
+    if (!video) return;
+
+    if (video._canplayListener) {
+      video.removeEventListener("canplay", video._canplayListener);
+      video._canplayListener = null;
+    }
+
+    const tryPlay = () => {
+      video.muted = true; // audio comes from bgMusic
+      video
+        .play()
+        .then(() => {
+          if (onSuccess) onSuccess();
+        })
+        .catch(() => {
+          if (onFail) onFail();
+        });
+    };
+
+    // If already buffered enough data, play immediately!
+    if (video.readyState >= 2) {
+      tryPlay();
+    } else {
+      video._canplayListener = tryPlay;
+      video.addEventListener("canplay", tryPlay, { once: true });
+      // Ensure element initiates buffering
+      if (video.src && video.networkState === 0) {
+        video.load();
+      }
+    }
+  }
+
+  // =========================================
   // PLAY / PAUSE
   // =========================================
 
@@ -218,17 +315,19 @@ export default function CustomerMenu() {
   }
 
   // =========================================
-  // VIDEO PROGRESS
+  // VIDEO PROGRESS (throttled)
   // =========================================
 
   function handleVideoTimeUpdate(event, index) {
-    if (isEndScreen) {
+    if (isEndScreen || index !== activeIndex) {
       return;
     }
 
-    if (index !== activeIndex) {
+    const now = performance.now();
+    if (now - lastProgressUpdateRef.current < PROGRESS_THROTTLE_MS) {
       return;
     }
+    lastProgressUpdateRef.current = now;
 
     const video = event.currentTarget;
 
@@ -237,32 +336,33 @@ export default function CustomerMenu() {
     }
 
     const progress = (video.currentTime / video.duration) * 100;
-
     setVideoProgress(Math.min(Math.max(progress, 0), 100));
   }
 
   // =========================================
-  // VIDEO PLAY
+  // BUFFERING HANDLERS
   // =========================================
+
+  function handleVideoWaiting(itemId) {
+    setBufferingMap((prev) => ({ ...prev, [itemId]: true }));
+  }
+
+  function handleVideoPlaying(itemId) {
+    setBufferingMap((prev) => ({ ...prev, [itemId]: false }));
+  }
 
   function handleVideoPlay(index) {
     if (index !== activeIndex) {
       return;
     }
-
     setPaused(false);
     setIsEndScreen(false);
   }
-
-  // =========================================
-  // VIDEO END
-  // =========================================
 
   function handleVideoEnded(index) {
     if (index !== activeIndex) {
       return;
     }
-
     setVideoProgress(100);
     setPaused(true);
   }
@@ -273,12 +373,8 @@ export default function CustomerMenu() {
 
   function toggleMute() {
     const nextMuted = !muted;
-
     setMuted(nextMuted);
 
-    // Dish videos are always muted on the element level.
-    // Sound comes exclusively from the background music audio element
-    // to avoid iOS Safari's single-audio-session conflict.
     if (bgMusicRef.current) {
       bgMusicRef.current.muted = nextMuted;
       if (!nextMuted) {
@@ -300,51 +396,7 @@ export default function CustomerMenu() {
   }
 
   // =========================================
-  // PLAY ACTIVE VIDEO
-  // =========================================
-
-  function playActiveVideo(index) {
-    if (!isMenuInteractiveRef.current) {
-      return;
-    }
-
-    const item = items[index];
-
-    if (!item) {
-      return;
-    }
-
-    const video = videoRefs.current[item.id];
-
-    if (!video) {
-      return;
-    }
-
-    video.muted = muted;
-
-    video
-      .play()
-      .then(() => {
-        setPaused(false);
-      })
-      .catch((err) => {
-        console.log("Unmuted play failed, falling back to muted:", err);
-        // Browser autoplay restriction. Fall back to muted!
-        video.muted = true;
-        video
-          .play()
-          .then(() => {
-            setPaused(false);
-            setMuted(true); // Update global state to reflect muted playback
-          })
-          .catch(() => {
-            setPaused(true);
-          });
-      });
-  }
-
-  // =========================================
-  // INTERSECTION OBSERVER
+  // INTERSECTION OBSERVER (SNAP-TO-PLAY)
   // =========================================
 
   useEffect(() => {
@@ -365,10 +417,8 @@ export default function CustomerMenu() {
 
           if (entry.target.dataset.type === "end") {
             pauseAllVideos();
-
             setIsEndScreen(true);
             setPaused(true);
-
             return;
           }
 
@@ -387,72 +437,61 @@ export default function CustomerMenu() {
           setVideoProgress(0);
           setPaused(false);
 
-          // 1. Immediately pause ALL other videos to stop their decoding threads.
+          // 1. Immediately pause ALL other videos
           Object.entries(videoRefs.current).forEach(([videoId, video]) => {
             const otherIndex = items.findIndex((item) => item.id === videoId);
-            if (otherIndex !== index) {
+            if (otherIndex !== index && video) {
               video.pause();
             }
           });
 
-          // 2. Debounce the heavy lifting (loading/unloading src) to avoid thrashing during fast swipes.
-          if (window.scrollDebounceTimeout) {
-            clearTimeout(window.scrollDebounceTimeout);
+          // 2. PLAY ACTIVE VIDEO IMMEDIATELY (Zero delay — no 200ms lag pause!)
+          const activeItem = items[index];
+          if (activeItem && isMenuInteractiveRef.current) {
+            const video = videoRefs.current[activeItem.id];
+            if (video) {
+              if (!video.src || !video.src.includes(activeItem.video_url)) {
+                video.src = activeItem.video_url;
+              }
+              safePlay(
+                video,
+                () => setPaused(false),
+                () => setPaused(true)
+              );
+            }
           }
 
-          window.scrollDebounceTimeout = setTimeout(() => {
-            // Dynamically load src for active video and neighbors,
-            // unload all others to stay within iOS memory limits.
-            items.forEach((it, i) => {
-              const video = videoRefs.current[it.id];
-              if (!video) return;
-
-              const isNearby = Math.abs(i - index) <= 1; // active ± 1
-
-              if (isNearby) {
-                // Load src if not already set
-                if (!video.src || !video.src.includes(it.video_url)) {
-                  video.src = it.video_url;
-                  video.load();
-                }
-              } else {
-                // Unload far-away videos to free memory
-                if (video.src) {
-                  video.pause();
-                  video.removeAttribute("src");
-                  video.load(); // resets the element
-                }
-              }
-            });
-
-            // Start active video.
-            const activeItem = items[index];
-            if (activeItem) {
-              const video = videoRefs.current[activeItem.id];
-              if (video) {
-                // Clean up any old canplay listeners (memory leak fix)
-                if (video._canplayListener) {
-                  video.removeEventListener("canplay", video._canplayListener);
-                }
-
-                const tryPlay = () => {
-                  video.muted = true; // always muted — audio comes from bgMusic
-                  video.play().then(() => setPaused(false)).catch(() => setPaused(true));
-                };
-
-                if (video.readyState >= 2) {
-                  tryPlay();
-                } else {
-                  video._canplayListener = tryPlay;
-                  video.addEventListener("canplay", tryPlay, { once: true });
-                }
-              }
+          // 3. Immediately prepare neighboring videos so next swipe is already buffered
+          const nextItem = items[index + 1];
+          if (nextItem) {
+            const nextVideo = videoRefs.current[nextItem.id];
+            if (nextVideo && nextItem.video_url && (!nextVideo.src || !nextVideo.src.includes(nextItem.video_url))) {
+              nextVideo.src = nextItem.video_url;
+              nextVideo.preload = "metadata";
             }
-          }, 150); // Wait 150ms after they stop scrolling
+          }
+
+          const prevItem = items[index - 1];
+          if (prevItem) {
+            const prevVideo = videoRefs.current[prevItem.id];
+            if (prevVideo && prevItem.video_url && (!prevVideo.src || !prevVideo.src.includes(prevItem.video_url))) {
+              prevVideo.src = prevItem.video_url;
+              prevVideo.preload = "metadata";
+            }
+          }
+
+          // 4. Debounce heavy unload cleanup of far-away videos (saves GC work)
+          if (cleanupDebounceRef.current) {
+            clearTimeout(cleanupDebounceRef.current);
+          }
+
+          cleanupDebounceRef.current = setTimeout(() => {
+            manageVideoSources(index);
+          }, CLEANUP_DEBOUNCE_MS);
         });
       },
       {
-        threshold: 0.65,
+        threshold: 0.55,
       },
     );
 
@@ -468,8 +507,11 @@ export default function CustomerMenu() {
 
     return () => {
       observer.disconnect();
+      if (cleanupDebounceRef.current) {
+        clearTimeout(cleanupDebounceRef.current);
+      }
     };
-  }, [items]);
+  }, [items, manageVideoSources]);
 
   // =========================================
   // RESET WHEN MENU LOADS
@@ -509,7 +551,6 @@ export default function CustomerMenu() {
         }, 2000);
       }
     } catch (error) {
-      // User cancelled native share.
       console.log("Share cancelled:", error);
     }
   }
@@ -530,7 +571,6 @@ export default function CustomerMenu() {
     }
 
     const nextItem = items[nextIndex];
-
     const nextSection = sectionRefs.current[nextItem?.id];
 
     nextSection?.scrollIntoView({
@@ -543,7 +583,6 @@ export default function CustomerMenu() {
   // =========================================
 
   const primaryColor = restaurant?.primary_color || "#111111";
-
   const secondaryColor = restaurant?.secondary_color || "#333333";
 
   // =========================================
@@ -551,7 +590,6 @@ export default function CustomerMenu() {
   // =========================================
 
   const currentItem = items[activeIndex];
-
   const currentCategory =
     currentItem?.categories?.name || currentItem?.category_name || "";
 
@@ -577,7 +615,6 @@ export default function CustomerMenu() {
       <div className="min-h-[100dvh] bg-black text-white flex items-center justify-center">
         <div className="text-center">
           <div className="w-9 h-9 border-2 border-white/20 border-t-white rounded-full animate-spin mx-auto mb-4" />
-
           <p className="text-white/60 text-sm">Loading menu...</p>
         </div>
       </div>
@@ -649,8 +686,9 @@ export default function CustomerMenu() {
       </div>
     );
   }
+
   // =========================================
-  // CUSTOMER MENU
+  // CUSTOMER MENU RENDER
   // =========================================
 
   return (
@@ -658,6 +696,8 @@ export default function CustomerMenu() {
       className="h-[100dvh] w-full overflow-y-auto snap-y snap-mandatory bg-black text-white"
       style={{
         backgroundColor: "#000000",
+        WebkitOverflowScrolling: "touch",
+        overscrollBehaviorY: "contain",
       }}
     >
       {/* =========================================
@@ -671,7 +711,6 @@ export default function CustomerMenu() {
           loop
           preload="auto"
           onEnded={(e) => {
-            // Safety net: manually restart if loop fails on iOS
             e.target.currentTime = 0;
             e.target.play().catch(console.error);
           }}
@@ -679,7 +718,7 @@ export default function CustomerMenu() {
       )}
 
       {/* =========================================
-          WELCOME SCREEN (For Audio Autoplay)
+          WELCOME SCREEN
       ========================================== */}
 
       {showWelcomeScreen && (
@@ -704,57 +743,62 @@ export default function CustomerMenu() {
               setMuted(false);
 
               if (restaurant.intro_video_url) {
-                // Show intro overlay BEFORE hiding welcome screen to prevent flash
                 setIntroPlaying(true);
               }
 
               setShowWelcomeScreen(false);
               
               if (restaurant.intro_video_url) {
-                // Don't start bgMusic yet — the intro video has its own audio.
-                // bgMusic will start when the intro ends (in onEnded).
                 if (introVideoRef.current) {
                   introVideoRef.current.muted = false;
                   introVideoRef.current.play().catch(console.error);
                 }
                 
-                // Preload the first dish video while intro plays
-                const activeItem = items[activeIndex];
-                if (activeItem) {
-                  const video = videoRefs.current[activeItem.id];
-                  if (video && activeItem.video_url) {
-                    video.src = activeItem.video_url;
+                // Preload first 2 items during intro
+                const firstItem = items[0];
+                if (firstItem) {
+                  const video = videoRefs.current[firstItem.id];
+                  if (video && firstItem.video_url) {
+                    video.src = firstItem.video_url;
+                    video.preload = "auto";
                     video.load();
+                  }
+                }
+                const secondItem = items[1];
+                if (secondItem) {
+                  const video2 = videoRefs.current[secondItem.id];
+                  if (video2 && secondItem.video_url) {
+                    video2.src = secondItem.video_url;
+                    video2.preload = "metadata";
                   }
                 }
               } else {
                 isMenuInteractiveRef.current = true;
                 
-                // Load and play the first dish video (muted — audio is from bgMusic)
                 const activeItem = items[activeIndex];
                 if (activeItem) {
                   const video = videoRefs.current[activeItem.id];
                   if (video && activeItem.video_url) {
                     video.src = activeItem.video_url;
-                    video.muted = true;
-                    video.load();
-                    video.addEventListener("canplay", () => {
-                      video.play().then(() => setPaused(false)).catch(() => setPaused(true));
-                    }, { once: true });
+                    video.preload = "auto";
+                    safePlay(
+                      video,
+                      () => setPaused(false),
+                      () => setPaused(true)
+                    );
                   }
                 }
 
-                // Also preload the next video
+                // Preload second item
                 const nextItem = items[activeIndex + 1];
                 if (nextItem) {
                   const nextVideo = videoRefs.current[nextItem.id];
                   if (nextVideo && nextItem.video_url) {
                     nextVideo.src = nextItem.video_url;
-                    nextVideo.load();
+                    nextVideo.preload = "metadata";
                   }
                 }
 
-                // Start bgMusic — no intro, so start it now
                 if (bgMusicRef.current) {
                   bgMusicRef.current.muted = false;
                   bgMusicRef.current.play().catch(console.error);
@@ -772,10 +816,6 @@ export default function CustomerMenu() {
           INTRO OVERLAY
       ========================================== */}
 
-      {/* =========================================
-          INTRO OVERLAY
-      ========================================== */}
-
       <div
         className={`fixed inset-0 z-[60] bg-black flex items-center justify-center ${
           introFading
@@ -788,120 +828,102 @@ export default function CustomerMenu() {
           visibility: introPlaying || introFading ? "visible" : "hidden",
         }}
       >
-          <video
-            ref={introVideoRef}
-            src={restaurant.intro_video_url}
-            autoPlay
-            playsInline
-            preload="auto"
-            onEnded={() => {
-              setIntroFading(true);
-              
-              isMenuInteractiveRef.current = true;
+        <video
+          ref={introVideoRef}
+          src={restaurant.intro_video_url}
+          autoPlay
+          playsInline
+          preload="auto"
+          onEnded={() => {
+            setIntroFading(true);
+            isMenuInteractiveRef.current = true;
 
-              // Play the first dish video (muted — audio comes from bgMusic)
-              const activeItem = items[activeIndex];
-              if (activeItem) {
-                const video = videoRefs.current[activeItem.id];
-                if (video) {
-                  video.muted = true;
-                  if (video.readyState >= 2) {
-                    video.play().then(() => setPaused(false)).catch(() => setPaused(true));
-                  } else {
-                    video.addEventListener("canplay", () => {
-                      video.play().then(() => setPaused(false)).catch(() => setPaused(true));
-                    }, { once: true });
-                    // Ensure src is set
-                    if (!video.src && activeItem.video_url) {
-                      video.src = activeItem.video_url;
-                      video.load();
-                    }
-                  }
+            const activeItem = items[activeIndex];
+            if (activeItem) {
+              const video = videoRefs.current[activeItem.id];
+              if (video) {
+                if (!video.src && activeItem.video_url) {
+                  video.src = activeItem.video_url;
                 }
+                safePlay(
+                  video,
+                  () => setPaused(false),
+                  () => setPaused(true)
+                );
               }
+            }
 
-              // Also preload the next video
-              const nextItem = items[activeIndex + 1];
-              if (nextItem) {
-                const nextVideo = videoRefs.current[nextItem.id];
-                if (nextVideo && nextItem.video_url && !nextVideo.src) {
-                  nextVideo.src = nextItem.video_url;
-                  nextVideo.load();
+            const nextItem = items[activeIndex + 1];
+            if (nextItem) {
+              const nextVideo = videoRefs.current[nextItem.id];
+              if (nextVideo && nextItem.video_url && !nextVideo.src) {
+                nextVideo.src = nextItem.video_url;
+                nextVideo.preload = "metadata";
+              }
+            }
+
+            if (bgMusicRef.current) {
+              bgMusicRef.current.muted = false;
+              bgMusicRef.current.play().catch(console.error);
+            }
+
+            setTimeout(() => {
+              setIntroPlaying(false);
+              setIntroFading(false);
+            }, 1000);
+          }}
+          className="w-full h-full object-cover"
+        />
+        
+        <button
+          onClick={() => {
+            if (introVideoRef.current) {
+              introVideoRef.current.pause();
+              introVideoRef.current.muted = true;
+            }
+
+            setIntroFading(true);
+            isMenuInteractiveRef.current = true;
+
+            const activeItem = items[activeIndex];
+            if (activeItem) {
+              const video = videoRefs.current[activeItem.id];
+              if (video) {
+                if (!video.src && activeItem.video_url) {
+                  video.src = activeItem.video_url;
                 }
+                safePlay(
+                  video,
+                  () => setPaused(false),
+                  () => setPaused(true)
+                );
               }
+            }
 
-              // NOW start bgMusic — intro is done, audio session is free
-              if (bgMusicRef.current) {
-                bgMusicRef.current.muted = false;
-                bgMusicRef.current.play().catch(console.error);
+            const nextItem = items[activeIndex + 1];
+            if (nextItem) {
+              const nextVideo = videoRefs.current[nextItem.id];
+              if (nextVideo && nextItem.video_url && !nextVideo.src) {
+                nextVideo.src = nextItem.video_url;
+                nextVideo.preload = "metadata";
               }
+            }
 
-              setTimeout(() => {
-                setIntroPlaying(false);
-                setIntroFading(false);
-              }, 1000);
-            }}
-            className="w-full h-full object-cover"
-          />
-          
-          <button
-            onClick={() => {
-              // Stop intro video audio immediately
-              if (introVideoRef.current) {
-                introVideoRef.current.pause();
-                introVideoRef.current.muted = true;
-              }
+            if (bgMusicRef.current) {
+              bgMusicRef.current.muted = false;
+              bgMusicRef.current.play().catch(console.error);
+            }
 
-              setIntroFading(true);
-              
-              isMenuInteractiveRef.current = true;
-
-              // Play dish video muted — audio is from bgMusic only
-              const activeItem = items[activeIndex];
-              if (activeItem) {
-                const video = videoRefs.current[activeItem.id];
-                if (video) {
-                  video.muted = true;
-                  if (!video.src && activeItem.video_url) {
-                    video.src = activeItem.video_url;
-                    video.load();
-                  }
-                  if (video.readyState >= 2) {
-                    video.play().then(() => setPaused(false)).catch(() => setPaused(true));
-                  } else {
-                    video.addEventListener("canplay", () => {
-                      video.play().then(() => setPaused(false)).catch(() => setPaused(true));
-                    }, { once: true });
-                  }
-                }
-              }
-
-              // Preload next
-              const nextItem = items[activeIndex + 1];
-              if (nextItem) {
-                const nextVideo = videoRefs.current[nextItem.id];
-                if (nextVideo && nextItem.video_url && !nextVideo.src) {
-                  nextVideo.src = nextItem.video_url;
-                  nextVideo.load();
-                }
-              }
-
-              // Start bgMusic — intro is stopped, audio session is free
-              if (bgMusicRef.current) {
-                bgMusicRef.current.muted = false;
-                bgMusicRef.current.play().catch(console.error);
-              }
-
-              setTimeout(() => {
-                setIntroPlaying(false);
-                setIntroFading(false);
-              }, 1000);
-            }}
-            className="absolute bottom-10 right-6 px-4 py-2 bg-white/20 backdrop-blur-md text-white rounded-full text-sm font-medium border border-white/20 z-10"
-          >
-            Skip Intro
-          </button>
-        </div>
+            setTimeout(() => {
+              setIntroPlaying(false);
+              setIntroFading(false);
+            }, 1000);
+          }}
+          className="absolute bottom-10 right-6 px-4 py-2 bg-white/20 backdrop-blur-md text-white rounded-full text-sm font-medium border border-white/20 z-10"
+        >
+          Skip Intro
+        </button>
+      </div>
 
       {/* =========================================
           MENU ITEMS
@@ -909,13 +931,14 @@ export default function CustomerMenu() {
 
       {items.map((item, index) => {
         const isActive = index === activeIndex;
-
         const hasVideo = Boolean(item.video_url);
-
         const hasImage = Boolean(item.image_url);
-
         const categoryName =
           item?.categories?.name || item?.category_name || "";
+
+        // Keep DOM light: Only render full video elements within active ± PRELOAD_WINDOW
+        const isNearby = Math.abs(index - activeIndex) <= PRELOAD_WINDOW;
+        const isBuffering = bufferingMap[item.id] && isActive;
 
         return (
           <section
@@ -924,29 +947,55 @@ export default function CustomerMenu() {
             data-index={index}
             data-type="item"
             className="relative h-[100dvh] w-full snap-start snap-always overflow-hidden bg-black"
+            style={{
+              transform: "translateZ(0)",
+              backfaceVisibility: "hidden",
+            }}
           >
             {/* =========================================
                 BACKGROUND MEDIA
             ========================================== */}
 
-            {hasVideo ? (
+            {hasVideo && isNearby ? (
               <video
                 ref={(element) => setVideoRef(item.id, element)}
                 poster={item.image_url || undefined}
                 muted
                 playsInline
-                preload="none"
+                webkit-playsinline="true"
+                disableRemotePlayback
                 loop
+                preload={isActive ? "auto" : "metadata"}
                 onTimeUpdate={(event) => handleVideoTimeUpdate(event, index)}
                 onPlay={() => handleVideoPlay(index)}
+                onEnded={() => handleVideoEnded(index)}
                 onClick={() => togglePlay(item.id)}
+                onWaiting={() => handleVideoWaiting(item.id)}
+                onPlaying={() => handleVideoPlaying(item.id)}
+                onCanPlay={() => handleVideoPlaying(item.id)}
                 className="absolute inset-0 w-full h-full object-cover cursor-pointer"
+                style={{
+                  transform: "translateZ(0)",
+                  backfaceVisibility: "hidden",
+                }}
               />
+            ) : hasVideo ? (
+              hasImage ? (
+                <img
+                  src={item.image_url}
+                  alt={item.name}
+                  className="absolute inset-0 w-full h-full object-cover"
+                  loading="lazy"
+                />
+              ) : (
+                <div className="absolute inset-0 bg-black" />
+              )
             ) : hasImage ? (
               <img
                 src={item.image_url}
                 alt={item.name}
                 className="absolute inset-0 w-full h-full object-cover"
+                loading="lazy"
               />
             ) : (
               <div
@@ -963,12 +1012,17 @@ export default function CustomerMenu() {
               </div>
             )}
 
-            {/* =========================================
-                DARK GRADIENT
-            ========================================== */}
+            {/* Buffering Spinner */}
+            {isBuffering && (
+              <div className="absolute inset-0 z-[5] flex items-center justify-center pointer-events-none">
+                <div className="w-12 h-12 rounded-full bg-black/50 backdrop-blur-sm flex items-center justify-center">
+                  <Loader2 size={24} className="text-white animate-spin" />
+                </div>
+              </div>
+            )}
 
+            {/* Dark Gradients */}
             <div className="absolute inset-0 bg-gradient-to-b from-black/50 via-transparent to-black/90 pointer-events-none" />
-
             <div className="absolute inset-x-0 top-0 h-40 bg-gradient-to-b from-black/60 to-transparent pointer-events-none" />
 
             {/* =========================================
@@ -977,8 +1031,6 @@ export default function CustomerMenu() {
 
             <div className="absolute top-0 left-0 right-0 z-20 px-4 sm:px-6 pt-4 sm:pt-6">
               <div className="flex items-start justify-between gap-4">
-                {/* Restaurant */}
-
                 <div className="flex items-center gap-3 min-w-0">
                   {restaurant.logo_url ? (
                     <img
@@ -1010,8 +1062,6 @@ export default function CustomerMenu() {
                   </div>
                 </div>
 
-                {/* Top actions */}
-
                 <div className="flex items-center gap-2">
                   {restaurant.pdf_menu_url && (
                     <div className="relative">
@@ -1025,7 +1075,6 @@ export default function CustomerMenu() {
                         <FileText size={18} />
                       </a>
                       
-                      {/* Hint Popup (only on first dish) */}
                       {index === 0 && (
                         <div className="absolute top-[120%] right-0 whitespace-nowrap bg-white text-black px-3 py-1.5 rounded-lg text-xs font-bold shadow-xl animate-bounce pointer-events-none origin-top-right before:content-[''] before:absolute before:bottom-[99%] before:right-4 before:border-4 before:border-transparent before:border-b-white">
                           View full menu
@@ -1076,19 +1125,18 @@ export default function CustomerMenu() {
               </div>
 
               {/* Progress */}
-
               <div className="mt-4 w-full h-0.5 rounded-full bg-white/25 overflow-hidden">
                 <div
-                  className="h-full rounded-full transition-all duration-100"
+                  className="h-full rounded-full"
                   style={{
                     width: `${videoProgress}%`,
                     backgroundColor: "#ffffff",
+                    transition: "width 200ms linear",
                   }}
                 />
               </div>
 
               {/* Categories Filter */}
-
               {categoriesList.length > 1 && (
                 <div className="mt-3 flex gap-2 overflow-x-auto pb-1 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
                   {categoriesList.map((cat) => {
@@ -1118,10 +1166,7 @@ export default function CustomerMenu() {
               )}
             </div>
 
-            {/* =========================================
-                PLAY / PAUSE
-            ========================================== */}
-
+            {/* Play/Pause Button */}
             {hasVideo && (
               <button
                 type="button"
@@ -1141,17 +1186,12 @@ export default function CustomerMenu() {
               </button>
             )}
 
-            {/* =========================================
-                DISH INFORMATION
-            ========================================== */}
-
+            {/* Dish Information */}
             <div 
               className="absolute left-0 right-0 bottom-0 z-20 px-5 sm:px-7 pb-16 sm:pb-20"
               style={{ paddingBottom: 'max(env(safe-area-inset-bottom, 4rem), 4rem)' }}
             >
               <div className="max-w-2xl">
-                {/* Category */}
-
                 {categoryName && (
                   <div className="mb-3">
                     <span
@@ -1165,8 +1205,6 @@ export default function CustomerMenu() {
                   </div>
                 )}
 
-                {/* Bestseller */}
-
                 {item.is_bestseller && (
                   <div className="mb-3">
                     <span className="inline-flex items-center gap-1.5 bg-yellow-400 text-black px-3 py-1.5 rounded-full text-xs font-bold shadow-lg">
@@ -1175,8 +1213,6 @@ export default function CustomerMenu() {
                     </span>
                   </div>
                 )}
-
-                {/* Dish name */}
 
                 <div className="flex items-end gap-3 sm:gap-4 flex-wrap">
                   <h1 className="text-2xl sm:text-3xl font-bold leading-tight drop-shadow-lg">
@@ -1188,15 +1224,11 @@ export default function CustomerMenu() {
                   </span>
                 </div>
 
-                {/* Description */}
-
                 {item.description && (
                   <p className="mt-2 text-xs sm:text-sm text-white/75 leading-relaxed max-w-xl">
                     {item.description}
                   </p>
                 )}
-
-                {/* Actions */}
 
                 <div className="flex flex-wrap items-center gap-2 mt-4">
                   {restaurant.phone && (
@@ -1222,8 +1254,6 @@ export default function CustomerMenu() {
                 </div>
               </div>
 
-              {/* Swipe hint */}
-
               {index === 0 && items.length > 1 && (
                 <div className="flex justify-center mt-6">
                   <button
@@ -1234,16 +1264,11 @@ export default function CustomerMenu() {
                     <span className="text-[10px] uppercase tracking-widest">
                       Swipe
                     </span>
-
                     <ChevronDown size={20} className="animate-bounce" />
                   </button>
                 </div>
               )}
             </div>
-
-            {/* =========================================
-                SHARE MESSAGE
-            ========================================== */}
 
             {shareMessage && (
               <div className="absolute bottom-28 left-1/2 -translate-x-1/2 z-40">
@@ -1305,7 +1330,6 @@ export default function CustomerMenu() {
               type="button"
               onClick={() => {
                 const firstSection = sectionRefs.current[items[0]?.id];
-
                 firstSection?.scrollIntoView({
                   behavior: "smooth",
                 });
@@ -1355,7 +1379,6 @@ export default function CustomerMenu() {
                 <p className="text-xs uppercase tracking-wider text-gray-400 font-semibold">
                   Restaurant
                 </p>
-
                 <h3 className="text-2xl font-bold mt-1">{restaurant.name}</h3>
               </div>
 
@@ -1374,7 +1397,6 @@ export default function CustomerMenu() {
               </p>
             )}
 
-            {/* PDF Menu Button */}
             {restaurant.pdf_menu_url && (
               <div className="mt-5">
                 <a
@@ -1398,7 +1420,6 @@ export default function CustomerMenu() {
 
                   <div>
                     <p className="text-xs text-gray-400">Address</p>
-
                     <p className="text-sm font-medium mt-1">
                       {restaurant.address}
                     </p>
@@ -1417,7 +1438,6 @@ export default function CustomerMenu() {
 
                   <div>
                     <p className="text-xs text-gray-400">Phone</p>
-
                     <p className="text-sm font-medium mt-1">
                       {restaurant.phone}
                     </p>

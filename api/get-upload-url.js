@@ -35,6 +35,7 @@ export default async function handler(req, res) {
       Bucket: 'videomenu-media',
       Key: filename,
       ContentType: contentType,
+      CacheControl: 'public, max-age=31536000, immutable',
     });
 
     // Generate a URL that expires in 15 minutes
