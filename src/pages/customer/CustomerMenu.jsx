@@ -12,8 +12,6 @@ import {
   ChevronDown,
   UtensilsCrossed,
   Info,
-  ArrowRight,
-  RefreshCw,
   FileText,
   Loader2,
 } from "lucide-react";
@@ -30,9 +28,6 @@ function InstagramIcon({ size = 24 }) {
 }
 
 import { supabase } from "../../lib/supabase";
-
-// Debounce for scrolling settle — avoids starting/aborting video decoding during fast swipes on iPhone
-const SCROLL_SETTLE_MS = 80;
 
 export default function CustomerMenu() {
   const { restaurantSlug } = useParams();
@@ -64,9 +59,7 @@ export default function CustomerMenu() {
   const [introFading, setIntroFading] = useState(false);
   const [showWelcomeScreen, setShowWelcomeScreen] = useState(false);
 
-  // Tracks which video is actually playing and decoded to avoid black screen: { [itemId]: true }
-  const [playingMap, setPlayingMap] = useState({});
-  // Tracks buffering state per video: { [itemId]: true }
+  // Buffering indicator state
   const [bufferingMap, setBufferingMap] = useState({});
 
   const videoRefs = useRef({});
@@ -78,12 +71,8 @@ export default function CustomerMenu() {
 
   // Prevents dish videos from playing while welcome screen or intro video is active
   const isMenuInteractiveRef = useRef(false);
-
-  // Scroll settle timer ref (prevents iOS video decoder deadlocks during fast swipes)
-  const scrollSettleTimeoutRef = useRef(null);
-
-  // Direct ref to activeIndex for callbacks without re-binding
   const activeIndexRef = useRef(0);
+
   useEffect(() => {
     activeIndexRef.current = activeIndex;
   }, [activeIndex]);
@@ -112,10 +101,7 @@ export default function CustomerMenu() {
         .eq("slug", slug)
         .maybeSingle();
 
-      if (restaurantError) {
-        throw restaurantError;
-      }
-
+      if (restaurantError) throw restaurantError;
       if (!restaurantData) {
         setError("Restaurant not found.");
         return;
@@ -123,23 +109,22 @@ export default function CustomerMenu() {
 
       setRestaurant(restaurantData);
 
+      // Increment view count once per session
       if (restaurantData?.id && !viewCountedRef.current) {
         viewCountedRef.current = true;
         supabase
           .rpc("increment_view_count", {
             restaurant_id_param: restaurantData.id,
           })
-          .then(({ error }) => {
-            if (error) console.error("View count error:", error);
+          .then(({ error: rpcErr }) => {
+            if (rpcErr) console.error("View count error:", rpcErr);
           });
       }
 
       if (restaurantData.is_active === false) {
-        setRestaurant(restaurantData);
         setError("This restaurant's VideoMenu is currently unavailable.");
         return;
       }
-      setRestaurant(restaurantData);
 
       setShowWelcomeScreen(true);
       isMenuInteractiveRef.current = false;
@@ -161,10 +146,7 @@ export default function CustomerMenu() {
           ascending: true,
         });
 
-      if (menuError) {
-        throw menuError;
-      }
-
+      if (menuError) throw menuError;
       setItems(menuItems || []);
     } catch (err) {
       console.error("Customer menu error:", err);
@@ -175,7 +157,7 @@ export default function CustomerMenu() {
   }
 
   // =========================================
-  // REFS MANAGEMENT
+  // VIDEO REFS & PLAYBACK
   // =========================================
 
   function setVideoRef(id, element) {
@@ -194,92 +176,46 @@ export default function CustomerMenu() {
     }
   }
 
-  // =========================================
-  // SAFE PLAY & PAUSE (CRITICAL FOR iOS SAFARI)
-  // =========================================
-
-  /**
-   * Safely plays an HTML5 video on iOS Safari without triggering AbortError
-   */
-  function safePlay(video) {
+  function playVideoSafely(video) {
     if (!video) return;
-    video.muted = true; // Audio comes from bgMusicRef to prevent iOS session ducking
+    video.muted = true;
+    const playPromise = video.play();
+    if (playPromise !== undefined) {
+      playPromise
+        .then(() => setPaused(false))
+        .catch(() => setPaused(true));
+    }
+  }
 
-    try {
-      const playPromise = video.play();
-      if (playPromise !== undefined) {
-        video._playPromise = playPromise;
-        playPromise
-          .then(() => {
-            video._playPromise = null;
-            setPaused(false);
-          })
-          .catch((err) => {
-            video._playPromise = null;
-            // Ignore abort error caused by normal swipe pause
-            if (err.name !== "AbortError") {
-              setPaused(true);
-            }
-          });
+  function pauseAllVideos() {
+    Object.values(videoRefs.current).forEach((v) => {
+      if (v && !v.paused) {
+        v.pause();
       }
-    } catch (err) {
-      setPaused(true);
-    }
+    });
   }
-
-  /**
-   * Safely pauses an HTML5 video, waiting for any pending playPromise to resolve first
-   */
-  function safePause(video) {
-    if (!video) return;
-    if (video._playPromise) {
-      video._playPromise
-        .then(() => {
-          video.pause();
-        })
-        .catch(() => {
-          video.pause();
-        });
-    } else {
-      video.pause();
-    }
-  }
-
-  // =========================================
-  // PLAY / PAUSE TOGGLE
-  // =========================================
 
   function togglePlay(id) {
     const video = videoRefs.current[id];
     if (!video) return;
 
     if (video.paused) {
-      safePlay(video);
-      setPaused(false);
+      playVideoSafely(video);
     } else {
-      safePause(video);
+      video.pause();
       setPaused(true);
     }
   }
 
-  // =========================================
-  // HARDWARE PROGRESS BAR (ZERO REACT RE-RENDERS)
-  // =========================================
-
-  /**
-   * Directly updates DOM transform on GPU compositor.
-   * Does NOT trigger React component re-renders!
-   * This guarantees 60fps scrolling on iPhone while video plays.
-   */
+  // Hardware-accelerated progress update (0 React re-renders)
   function handleVideoTimeUpdate(event, index) {
     if (index !== activeIndexRef.current) return;
-
     const video = event.currentTarget;
     if (!video.duration || !Number.isFinite(video.duration)) return;
 
-    const progressRatio = Math.min(Math.max(video.currentTime / video.duration, 0), 1);
+    const ratio = Math.min(Math.max(video.currentTime / video.duration, 0), 1);
     if (progressBarRef.current) {
-      progressBarRef.current.style.transform = `scaleX(${progressRatio})`;
+      progressBarRef.current.style.transform = `scaleX(${ratio})`;
     }
   }
 
@@ -289,7 +225,6 @@ export default function CustomerMenu() {
 
   function handleVideoPlaying(itemId) {
     setBufferingMap((prev) => ({ ...prev, [itemId]: false }));
-    setPlayingMap((prev) => ({ ...prev, [itemId]: true }));
   }
 
   function handleVideoEnded(index) {
@@ -301,7 +236,7 @@ export default function CustomerMenu() {
   }
 
   // =========================================
-  // MUTE TOGGLE
+  // MUTE / UNMUTE
   // =========================================
 
   function toggleMute() {
@@ -317,58 +252,7 @@ export default function CustomerMenu() {
   }
 
   // =========================================
-  // ACTIVATE SLIDE (SETTLED SCROLL LOGIC)
-  // =========================================
-
-  const activateSlide = useCallback((index) => {
-    if (!items.length) return;
-
-    const activeItem = items[index];
-    if (!activeItem) return;
-
-    setActiveIndex(index);
-    setIsEndScreen(false);
-    setPaused(false);
-
-    // Reset progress bar transform
-    if (progressBarRef.current) {
-      progressBarRef.current.style.transform = "scaleX(0)";
-    }
-
-    // 1. Safely pause all non-active videos
-    items.forEach((item, i) => {
-      if (i !== index) {
-        const otherVideo = videoRefs.current[item.id];
-        if (otherVideo) {
-          safePause(otherVideo);
-        }
-      }
-    });
-
-    // 2. Play active video if interactive
-    if (isMenuInteractiveRef.current) {
-      const activeVideo = videoRefs.current[activeItem.id];
-      if (activeVideo) {
-        if (!activeVideo.src || !activeVideo.src.includes(activeItem.video_url)) {
-          activeVideo.src = activeItem.video_url;
-        }
-        safePlay(activeVideo);
-      }
-    }
-
-    // 3. Preload the next 1 video metadata for instant swipe transition
-    const nextItem = items[index + 1];
-    if (nextItem && nextItem.video_url) {
-      const nextVideo = videoRefs.current[nextItem.id];
-      if (nextVideo && (!nextVideo.src || !nextVideo.src.includes(nextItem.video_url))) {
-        nextVideo.src = nextItem.video_url;
-        nextVideo.preload = "metadata";
-      }
-    }
-  }, [items]);
-
-  // =========================================
-  // INTERSECTION OBSERVER
+  // INTERSECTION OBSERVER (REEL SCROLLING)
   // =========================================
 
   useEffect(() => {
@@ -379,54 +263,74 @@ export default function CustomerMenu() {
         entries.forEach((entry) => {
           if (!entry.isIntersecting) return;
 
-          // End Screen
+          // End Screen reached
           if (entry.target.dataset.type === "end") {
-            items.forEach((it) => {
-              const v = videoRefs.current[it.id];
-              if (v) safePause(v);
-            });
+            pauseAllVideos();
             setIsEndScreen(true);
             setPaused(true);
             return;
           }
 
-          // Menu Item
           const index = Number(entry.target.dataset.index);
           if (!Number.isFinite(index)) return;
 
-          // Debounce activation slightly so rapid swipes don't stall iOS media engine
-          if (scrollSettleTimeoutRef.current) {
-            clearTimeout(scrollSettleTimeoutRef.current);
+          setActiveIndex(index);
+          setIsEndScreen(false);
+          setPaused(false);
+
+          if (progressBarRef.current) {
+            progressBarRef.current.style.transform = "scaleX(0)";
           }
 
-          scrollSettleTimeoutRef.current = setTimeout(() => {
-            activateSlide(index);
-          }, SCROLL_SETTLE_MS);
+          // 1. Pause every video except the active one
+          items.forEach((it, i) => {
+            if (i !== index) {
+              const other = videoRefs.current[it.id];
+              if (other && !other.paused) {
+                other.pause();
+              }
+            }
+          });
+
+          // 2. Play active video immediately
+          if (isMenuInteractiveRef.current) {
+            const activeItem = items[index];
+            if (activeItem) {
+              const activeVideo = videoRefs.current[activeItem.id];
+              if (activeVideo) {
+                playVideoSafely(activeVideo);
+              }
+            }
+          }
+
+          // 3. Preload the next video in queue for instant swipe
+          const nextItem = items[index + 1];
+          if (nextItem) {
+            const nextVideo = videoRefs.current[nextItem.id];
+            if (nextVideo && nextVideo.preload !== "auto") {
+              nextVideo.preload = "auto";
+            }
+          }
         });
       },
       {
-        threshold: 0.55,
+        threshold: 0.6,
       },
     );
 
-    Object.values(sectionRefs.current).forEach((section) => {
-      if (section) observer.observe(section);
+    Object.values(sectionRefs.current).forEach((el) => {
+      if (el) observer.observe(el);
     });
 
     if (endScreenRef.current) {
       observer.observe(endScreenRef.current);
     }
 
-    return () => {
-      observer.disconnect();
-      if (scrollSettleTimeoutRef.current) {
-        clearTimeout(scrollSettleTimeoutRef.current);
-      }
-    };
-  }, [items, activateSlide]);
+    return () => observer.disconnect();
+  }, [items]);
 
   // =========================================
-  // SHARE MENU
+  // SHARE & NAV
   // =========================================
 
   async function shareMenu() {
@@ -447,10 +351,6 @@ export default function CustomerMenu() {
       console.log("Share cancelled:", error);
     }
   }
-
-  // =========================================
-  // SCROLL TO NEXT
-  // =========================================
 
   function scrollToNext() {
     const nextIndex = activeIndex + 1;
@@ -479,14 +379,14 @@ export default function CustomerMenu() {
   }, []);
 
   // =========================================
-  // LOADING & ERROR SCREENS
+  // LOADING / ERROR SCREENS
   // =========================================
 
   if (loading) {
     return (
-      <div className="min-h-[100dvh] bg-black text-white flex items-center justify-center">
+      <div className="fixed inset-0 bg-black text-white flex items-center justify-center">
         <div className="text-center">
-          <div className="w-9 h-9 border-2 border-white/20 border-t-white rounded-full animate-spin mx-auto mb-4" />
+          <div className="w-10 h-10 border-2 border-white/20 border-t-white rounded-full animate-spin mx-auto mb-4" />
           <p className="text-white/60 text-sm">Loading menu...</p>
         </div>
       </div>
@@ -495,7 +395,7 @@ export default function CustomerMenu() {
 
   if (error || !restaurant) {
     return (
-      <div className="min-h-[100dvh] bg-black text-white flex items-center justify-center px-6">
+      <div className="fixed inset-0 bg-black text-white flex items-center justify-center px-6">
         <div className="text-center max-w-md">
           <div className="w-16 h-16 mx-auto rounded-2xl bg-white/10 flex items-center justify-center mb-6">
             <UtensilsCrossed size={28} className="text-white/60" />
@@ -510,7 +410,7 @@ export default function CustomerMenu() {
   if (items.length === 0) {
     return (
       <div
-        className="min-h-[100dvh] text-white flex items-center justify-center px-6"
+        className="fixed inset-0 text-white flex items-center justify-center px-6"
         style={{
           background: `linear-gradient(135deg, ${primaryColor}, ${secondaryColor})`,
         }}
@@ -538,19 +438,18 @@ export default function CustomerMenu() {
   }
 
   // =========================================
-  // MAIN COMPONENT RENDER
+  // MAIN VIEWPORT
   // =========================================
 
   return (
     <div
-      className="h-[100dvh] w-full overflow-y-auto snap-y snap-mandatory bg-black text-white"
+      className="fixed inset-0 w-full h-full overflow-y-auto snap-y snap-mandatory bg-black text-white"
       style={{
-        backgroundColor: "#000000",
         WebkitOverflowScrolling: "touch",
         overscrollBehaviorY: "contain",
       }}
     >
-      {/* Background Music */}
+      {/* Background Audio */}
       {restaurant.background_music_url && (
         <audio
           ref={bgMusicRef}
@@ -564,7 +463,7 @@ export default function CustomerMenu() {
         />
       )}
 
-      {/* Welcome Screen */}
+      {/* Welcome Screen for Audio Autoplay */}
       {showWelcomeScreen && (
         <div className="fixed inset-0 z-[60] flex flex-col items-center justify-center bg-black text-white p-6">
           {restaurant.logo_url ? (
@@ -597,25 +496,11 @@ export default function CustomerMenu() {
                   introVideoRef.current.muted = false;
                   introVideoRef.current.play().catch(console.error);
                 }
-                // Preload first video
-                const firstItem = items[0];
-                if (firstItem && firstItem.video_url) {
-                  const video = videoRefs.current[firstItem.id];
-                  if (video) {
-                    video.src = firstItem.video_url;
-                    video.preload = "auto";
-                  }
-                }
               } else {
                 isMenuInteractiveRef.current = true;
-                const activeItem = items[0];
-                if (activeItem && activeItem.video_url) {
-                  const video = videoRefs.current[activeItem.id];
-                  if (video) {
-                    video.src = activeItem.video_url;
-                    video.preload = "auto";
-                    safePlay(video);
-                  }
+                const firstVideo = videoRefs.current[items[0]?.id];
+                if (firstVideo) {
+                  playVideoSafely(firstVideo);
                 }
 
                 if (bgMusicRef.current) {
@@ -632,85 +517,78 @@ export default function CustomerMenu() {
       )}
 
       {/* Intro Video Overlay */}
-      <div
-        className={`fixed inset-0 z-[60] bg-black flex items-center justify-center ${
-          introFading
-            ? "opacity-0 scale-110 pointer-events-none transition-all duration-1000 ease-[cubic-bezier(0.87,0,0.13,1)]"
-            : introPlaying
-              ? "opacity-100 scale-100"
-              : "opacity-0 pointer-events-none"
-        }`}
-        style={{
-          visibility: introPlaying || introFading ? "visible" : "hidden",
-        }}
-      >
-        <video
-          ref={introVideoRef}
-          src={restaurant.intro_video_url}
-          autoPlay
-          playsInline
-          webkit-playsinline="true"
-          preload="auto"
-          onEnded={() => {
-            setIntroFading(true);
-            isMenuInteractiveRef.current = true;
-
-            const activeItem = items[activeIndexRef.current];
-            if (activeItem && activeItem.video_url) {
-              const video = videoRefs.current[activeItem.id];
-              if (video) {
-                if (!video.src) video.src = activeItem.video_url;
-                safePlay(video);
-              }
-            }
-
-            if (bgMusicRef.current) {
-              bgMusicRef.current.muted = false;
-              bgMusicRef.current.play().catch(console.error);
-            }
-
-            setTimeout(() => {
-              setIntroPlaying(false);
-              setIntroFading(false);
-            }, 1000);
+      {restaurant.intro_video_url && (
+        <div
+          className={`fixed inset-0 z-[60] bg-black flex items-center justify-center ${
+            introFading
+              ? "opacity-0 scale-110 pointer-events-none transition-all duration-1000 ease-[cubic-bezier(0.87,0,0.13,1)]"
+              : introPlaying
+                ? "opacity-100 scale-100"
+                : "opacity-0 pointer-events-none"
+          }`}
+          style={{
+            visibility: introPlaying || introFading ? "visible" : "hidden",
           }}
-          className="w-full h-full object-cover"
-        />
-
-        <button
-          onClick={() => {
-            if (introVideoRef.current) {
-              introVideoRef.current.pause();
-              introVideoRef.current.muted = true;
-            }
-
-            setIntroFading(true);
-            isMenuInteractiveRef.current = true;
-
-            const activeItem = items[activeIndexRef.current];
-            if (activeItem && activeItem.video_url) {
-              const video = videoRefs.current[activeItem.id];
-              if (video) {
-                if (!video.src) video.src = activeItem.video_url;
-                safePlay(video);
-              }
-            }
-
-            if (bgMusicRef.current) {
-              bgMusicRef.current.muted = false;
-              bgMusicRef.current.play().catch(console.error);
-            }
-
-            setTimeout(() => {
-              setIntroPlaying(false);
-              setIntroFading(false);
-            }, 1000);
-          }}
-          className="absolute bottom-10 right-6 px-4 py-2 bg-white/20 backdrop-blur-md text-white rounded-full text-sm font-medium border border-white/20 z-10"
         >
-          Skip Intro
-        </button>
-      </div>
+          <video
+            ref={introVideoRef}
+            src={restaurant.intro_video_url}
+            playsInline
+            webkit-playsinline="true"
+            preload="auto"
+            onEnded={() => {
+              setIntroFading(true);
+              isMenuInteractiveRef.current = true;
+
+              const firstVideo = videoRefs.current[items[activeIndexRef.current]?.id];
+              if (firstVideo) {
+                playVideoSafely(firstVideo);
+              }
+
+              if (bgMusicRef.current) {
+                bgMusicRef.current.muted = false;
+                bgMusicRef.current.play().catch(console.error);
+              }
+
+              setTimeout(() => {
+                setIntroPlaying(false);
+                setIntroFading(false);
+              }, 1000);
+            }}
+            className="w-full h-full object-cover"
+          />
+
+          <button
+            onClick={() => {
+              if (introVideoRef.current) {
+                introVideoRef.current.pause();
+                introVideoRef.current.muted = true;
+              }
+
+              setIntroFading(true);
+              isMenuInteractiveRef.current = true;
+
+              const firstVideo = videoRefs.current[items[activeIndexRef.current]?.id];
+              if (firstVideo) {
+                playVideoSafely(firstVideo);
+              }
+
+              if (bgMusicRef.current) {
+                bgMusicRef.current.muted = false;
+                bgMusicRef.current.play().catch(console.error);
+              }
+
+              setTimeout(() => {
+                setIntroPlaying(false);
+                setIntroFading(false);
+              }, 1000);
+            }}
+            className="absolute bottom-10 right-6 px-4 py-2 bg-white/20 backdrop-blur-md text-white rounded-full text-sm font-medium border border-white/20 z-10"
+          >
+            Skip Intro
+          </button>
+        </div>
+      )}
 
       {/* =========================================
           FEED OF DISH CARDS
@@ -718,14 +596,10 @@ export default function CustomerMenu() {
 
       {items.map((item, index) => {
         const isActive = index === activeIndex;
+        const isNext = index === activeIndex + 1;
         const hasVideo = Boolean(item.video_url);
         const hasImage = Boolean(item.image_url);
         const categoryName = item?.categories?.name || item?.category_name || "";
-
-        // Instant visual frame: If image_url exists, use it; otherwise use video poster frame (#t=0.001)
-        const posterSrc = item.image_url || (item.video_url ? `${item.video_url}#t=0.001` : null);
-
-        const isVideoReady = playingMap[item.id];
         const isBuffering = bufferingMap[item.id] && isActive;
 
         return (
@@ -734,19 +608,35 @@ export default function CustomerMenu() {
             ref={(element) => setSectionRef(item.id, element)}
             data-index={index}
             data-type="item"
-            className="relative h-[100dvh] w-full snap-start overflow-hidden bg-black"
+            className="relative h-[100dvh] w-full snap-start snap-normal overflow-hidden bg-black"
           >
-            {/* =========================================
-                BACKGROUND MEDIA LAYER
-            ========================================== */}
-
-            {/* Layer 1: Instant Poster (ALWAYS rendered - Zero black screen, instant 60fps frame) */}
-            {posterSrc ? (
+            {/* Background Media */}
+            {hasVideo ? (
+              <video
+                ref={(element) => setVideoRef(item.id, element)}
+                src={item.video_url}
+                poster={item.image_url || undefined}
+                muted
+                playsInline
+                webkit-playsinline="true"
+                x5-playsinline="true"
+                disablePictureInPicture
+                disableRemotePlayback
+                loop
+                preload={isActive ? "auto" : isNext ? "metadata" : "none"}
+                onTimeUpdate={(e) => handleVideoTimeUpdate(e, index)}
+                onEnded={() => handleVideoEnded(index)}
+                onWaiting={() => handleVideoWaiting(item.id)}
+                onPlaying={() => handleVideoPlaying(item.id)}
+                onClick={() => togglePlay(item.id)}
+                className="absolute inset-0 w-full h-full object-cover cursor-pointer"
+              />
+            ) : hasImage ? (
               <img
-                src={posterSrc}
+                src={item.image_url}
                 alt={item.name}
+                className="absolute inset-0 w-full h-full object-cover"
                 loading={index <= 1 ? "eager" : "lazy"}
-                className="absolute inset-0 w-full h-full object-cover pointer-events-none"
               />
             ) : (
               <div
@@ -759,47 +649,20 @@ export default function CustomerMenu() {
               </div>
             )}
 
-            {/* Layer 2: Video Player (Permanently mounted, fades in smoothly when ready) */}
-            {hasVideo && (
-              <video
-                ref={(element) => setVideoRef(item.id, element)}
-                muted
-                playsInline
-                webkit-playsinline="true"
-                x5-playsinline="true"
-                disablePictureInPicture
-                disableRemotePlayback
-                loop
-                preload={isActive ? "auto" : "none"}
-                onTimeUpdate={(event) => handleVideoTimeUpdate(event, index)}
-                onEnded={() => handleVideoEnded(index)}
-                onClick={() => togglePlay(item.id)}
-                onWaiting={() => handleVideoWaiting(item.id)}
-                onPlaying={() => handleVideoPlaying(item.id)}
-                onCanPlay={() => handleVideoPlaying(item.id)}
-                className={`absolute inset-0 w-full h-full object-cover cursor-pointer transition-opacity duration-300 ${
-                  isVideoReady ? "opacity-100" : "opacity-0"
-                }`}
-              />
-            )}
-
-            {/* Layer 3: Buffering Spinner (Appears gracefully over poster on slow networks) */}
+            {/* Buffering Indicator */}
             {isBuffering && (
               <div className="absolute inset-0 z-[5] flex items-center justify-center pointer-events-none">
-                <div className="w-12 h-12 rounded-full bg-black/50 backdrop-blur-sm flex items-center justify-center">
+                <div className="w-12 h-12 rounded-full bg-black/60 backdrop-blur-sm flex items-center justify-center">
                   <Loader2 size={24} className="text-white animate-spin" />
                 </div>
               </div>
             )}
 
-            {/* Gradients */}
+            {/* Overlays */}
             <div className="absolute inset-0 bg-gradient-to-b from-black/50 via-transparent to-black/90 pointer-events-none" />
             <div className="absolute inset-x-0 top-0 h-40 bg-gradient-to-b from-black/60 to-transparent pointer-events-none" />
 
-            {/* =========================================
-                TOP HEADER
-            ========================================== */}
-
+            {/* TOP HEADER */}
             <div className="absolute top-0 left-0 right-0 z-20 px-4 sm:px-6 pt-4 sm:pt-6">
               <div className="flex items-start justify-between gap-4">
                 <div className="flex items-center gap-3 min-w-0">
@@ -889,7 +752,7 @@ export default function CustomerMenu() {
                 </div>
               </div>
 
-              {/* Progress Bar (Updated via hardware transform ref, zero React re-renders) */}
+              {/* Progress Bar (GPU transform, 0 re-renders) */}
               <div className="mt-4 w-full h-0.5 rounded-full bg-white/25 overflow-hidden">
                 <div
                   ref={isActive ? progressBarRef : null}
