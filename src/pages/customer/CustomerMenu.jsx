@@ -31,18 +31,8 @@ function InstagramIcon({ size = 24 }) {
 
 import { supabase } from "../../lib/supabase";
 
-// =========================================
-// PERFORMANCE TUNING CONSTANTS
-// =========================================
-
-// How many neighbor videos to keep loaded in memory (active ± this value)
-const PRELOAD_WINDOW = 2;
-
-// Debounce for cleaning up far-away video memory (avoids GC thrash during rapid swipe)
-const CLEANUP_DEBOUNCE_MS = 300;
-
-// Throttle interval (ms) for onTimeUpdate — prevents 60fps re-renders during video playback
-const PROGRESS_THROTTLE_MS = 250;
+// Debounce for scrolling settle — avoids starting/aborting video decoding during fast swipes on iPhone
+const SCROLL_SETTLE_MS = 80;
 
 export default function CustomerMenu() {
   const { restaurantSlug } = useParams();
@@ -62,7 +52,6 @@ export default function CustomerMenu() {
   const [error, setError] = useState("");
 
   const [activeIndex, setActiveIndex] = useState(0);
-  const [videoProgress, setVideoProgress] = useState(0);
 
   const [muted, setMuted] = useState(true);
   const [paused, setPaused] = useState(false);
@@ -75,23 +64,29 @@ export default function CustomerMenu() {
   const [introFading, setIntroFading] = useState(false);
   const [showWelcomeScreen, setShowWelcomeScreen] = useState(false);
 
-  // Per-video buffering state: { [itemId]: true/false }
+  // Tracks which video is actually playing and decoded to avoid black screen: { [itemId]: true }
+  const [playingMap, setPlayingMap] = useState({});
+  // Tracks buffering state per video: { [itemId]: true }
   const [bufferingMap, setBufferingMap] = useState({});
 
   const videoRefs = useRef({});
   const sectionRefs = useRef({});
+  const progressBarRef = useRef(null);
   const endScreenRef = useRef(null);
   const bgMusicRef = useRef(null);
   const introVideoRef = useRef(null);
-  
+
   // Prevents dish videos from playing while welcome screen or intro video is active
   const isMenuInteractiveRef = useRef(false);
 
-  // Throttle ref for progress updates (avoids re-creating on each render)
-  const lastProgressUpdateRef = useRef(0);
+  // Scroll settle timer ref (prevents iOS video decoder deadlocks during fast swipes)
+  const scrollSettleTimeoutRef = useRef(null);
 
-  // Cleanup debounce timer ref
-  const cleanupDebounceRef = useRef(null);
+  // Direct ref to activeIndex for callbacks without re-binding
+  const activeIndexRef = useRef(0);
+  useEffect(() => {
+    activeIndexRef.current = activeIndex;
+  }, [activeIndex]);
 
   // =========================================
   // LOAD RESTAURANT + MENU
@@ -111,10 +106,6 @@ export default function CustomerMenu() {
         return;
       }
 
-      // -----------------------------------------
-      // RESTAURANT
-      // -----------------------------------------
-
       const { data: restaurantData, error: restaurantError } = await supabase
         .from("restaurants")
         .select("*")
@@ -132,7 +123,6 @@ export default function CustomerMenu() {
 
       setRestaurant(restaurantData);
 
-      // Increment view count in the background securely (only once per session)
       if (restaurantData?.id && !viewCountedRef.current) {
         viewCountedRef.current = true;
         supabase
@@ -151,13 +141,8 @@ export default function CustomerMenu() {
       }
       setRestaurant(restaurantData);
 
-      // Always show welcome screen to ensure user interaction (required for iOS Safari audio)
       setShowWelcomeScreen(true);
       isMenuInteractiveRef.current = false;
-
-      // -----------------------------------------
-      // AVAILABLE MENU ITEMS
-      // -----------------------------------------
 
       const { data: menuItems, error: menuError } = await supabase
         .from("menu_items")
@@ -183,7 +168,6 @@ export default function CustomerMenu() {
       setItems(menuItems || []);
     } catch (err) {
       console.error("Customer menu error:", err);
-
       setError(err?.message || "Unable to load this restaurant menu.");
     } finally {
       setLoading(false);
@@ -191,7 +175,7 @@ export default function CustomerMenu() {
   }
 
   // =========================================
-  // VIDEO REFERENCES
+  // REFS MANAGEMENT
   // =========================================
 
   function setVideoRef(id, element) {
@@ -202,10 +186,6 @@ export default function CustomerMenu() {
     }
   }
 
-  // =========================================
-  // SECTION REFERENCES
-  // =========================================
-
   function setSectionRef(id, element) {
     if (element) {
       sectionRefs.current[id] = element;
@@ -215,133 +195,93 @@ export default function CustomerMenu() {
   }
 
   // =========================================
-  // SMART VIDEO PRELOADING & MEMORY MANAGEMENT
+  // SAFE PLAY & PAUSE (CRITICAL FOR iOS SAFARI)
   // =========================================
 
   /**
-   * Prepares neighbor videos so swiping into them starts playback instantly.
-   * Cleans up videos outside PRELOAD_WINDOW to prevent memory crashes on mobile devices.
+   * Safely plays an HTML5 video on iOS Safari without triggering AbortError
    */
-  const manageVideoSources = useCallback((centerIndex) => {
-    items.forEach((it, i) => {
-      const video = videoRefs.current[it.id];
-      if (!video) return;
-
-      const distance = Math.abs(i - centerIndex);
-      const isNearby = distance <= PRELOAD_WINDOW;
-
-      if (isNearby) {
-        // Ensure source is attached
-        if (!video.src || !video.src.includes(it.video_url)) {
-          video.src = it.video_url;
-        }
-        // Active gets auto preload, neighbors get metadata preloaded
-        video.preload = i === centerIndex ? "auto" : "metadata";
-      } else {
-        // Unload far-away videos to free GPU texture memory
-        if (video.src) {
-          video.pause();
-          video.removeAttribute("src");
-          video.load();
-        }
-      }
-    });
-  }, [items]);
-
-  // =========================================
-  // SAFE PLAY HELPER
-  // =========================================
-
-  /**
-   * Immediately plays a video. If it's buffering, plays as soon as ready.
-   */
-  function safePlay(video, onSuccess, onFail) {
+  function safePlay(video) {
     if (!video) return;
+    video.muted = true; // Audio comes from bgMusicRef to prevent iOS session ducking
 
-    if (video._canplayListener) {
-      video.removeEventListener("canplay", video._canplayListener);
-      video._canplayListener = null;
+    try {
+      const playPromise = video.play();
+      if (playPromise !== undefined) {
+        video._playPromise = playPromise;
+        playPromise
+          .then(() => {
+            video._playPromise = null;
+            setPaused(false);
+          })
+          .catch((err) => {
+            video._playPromise = null;
+            // Ignore abort error caused by normal swipe pause
+            if (err.name !== "AbortError") {
+              setPaused(true);
+            }
+          });
+      }
+    } catch (err) {
+      setPaused(true);
     }
+  }
 
-    const tryPlay = () => {
-      video.muted = true; // audio comes from bgMusic
-      video
-        .play()
+  /**
+   * Safely pauses an HTML5 video, waiting for any pending playPromise to resolve first
+   */
+  function safePause(video) {
+    if (!video) return;
+    if (video._playPromise) {
+      video._playPromise
         .then(() => {
-          if (onSuccess) onSuccess();
+          video.pause();
         })
         .catch(() => {
-          if (onFail) onFail();
+          video.pause();
         });
-    };
-
-    // If already buffered enough data, play immediately!
-    if (video.readyState >= 2) {
-      tryPlay();
     } else {
-      video._canplayListener = tryPlay;
-      video.addEventListener("canplay", tryPlay, { once: true });
-      // Ensure element initiates buffering
-      if (video.src && video.networkState === 0) {
-        video.load();
-      }
+      video.pause();
     }
   }
 
   // =========================================
-  // PLAY / PAUSE
+  // PLAY / PAUSE TOGGLE
   // =========================================
 
   function togglePlay(id) {
     const video = videoRefs.current[id];
-
-    if (!video) {
-      return;
-    }
+    if (!video) return;
 
     if (video.paused) {
-      video
-        .play()
-        .then(() => {
-          setPaused(false);
-        })
-        .catch((err) => {
-          console.error("Video play error:", err);
-        });
+      safePlay(video);
+      setPaused(false);
     } else {
-      video.pause();
+      safePause(video);
       setPaused(true);
     }
   }
 
   // =========================================
-  // VIDEO PROGRESS (throttled)
+  // HARDWARE PROGRESS BAR (ZERO REACT RE-RENDERS)
   // =========================================
 
+  /**
+   * Directly updates DOM transform on GPU compositor.
+   * Does NOT trigger React component re-renders!
+   * This guarantees 60fps scrolling on iPhone while video plays.
+   */
   function handleVideoTimeUpdate(event, index) {
-    if (isEndScreen || index !== activeIndex) {
-      return;
-    }
-
-    const now = performance.now();
-    if (now - lastProgressUpdateRef.current < PROGRESS_THROTTLE_MS) {
-      return;
-    }
-    lastProgressUpdateRef.current = now;
+    if (index !== activeIndexRef.current) return;
 
     const video = event.currentTarget;
+    if (!video.duration || !Number.isFinite(video.duration)) return;
 
-    if (!video.duration || !Number.isFinite(video.duration)) {
-      return;
+    const progressRatio = Math.min(Math.max(video.currentTime / video.duration, 0), 1);
+    if (progressBarRef.current) {
+      progressBarRef.current.style.transform = `scaleX(${progressRatio})`;
     }
-
-    const progress = (video.currentTime / video.duration) * 100;
-    setVideoProgress(Math.min(Math.max(progress, 0), 100));
   }
-
-  // =========================================
-  // BUFFERING HANDLERS
-  // =========================================
 
   function handleVideoWaiting(itemId) {
     setBufferingMap((prev) => ({ ...prev, [itemId]: true }));
@@ -349,26 +289,19 @@ export default function CustomerMenu() {
 
   function handleVideoPlaying(itemId) {
     setBufferingMap((prev) => ({ ...prev, [itemId]: false }));
-  }
-
-  function handleVideoPlay(index) {
-    if (index !== activeIndex) {
-      return;
-    }
-    setPaused(false);
-    setIsEndScreen(false);
+    setPlayingMap((prev) => ({ ...prev, [itemId]: true }));
   }
 
   function handleVideoEnded(index) {
-    if (index !== activeIndex) {
-      return;
+    if (index !== activeIndexRef.current) return;
+    if (progressBarRef.current) {
+      progressBarRef.current.style.transform = "scaleX(1)";
     }
-    setVideoProgress(100);
     setPaused(true);
   }
 
   // =========================================
-  // MUTE
+  // MUTE TOGGLE
   // =========================================
 
   function toggleMute() {
@@ -384,110 +317,91 @@ export default function CustomerMenu() {
   }
 
   // =========================================
-  // PAUSE ALL VIDEOS
+  // ACTIVATE SLIDE (SETTLED SCROLL LOGIC)
   // =========================================
 
-  function pauseAllVideos() {
-    Object.values(videoRefs.current).forEach((video) => {
-      if (video) {
-        video.pause();
+  const activateSlide = useCallback((index) => {
+    if (!items.length) return;
+
+    const activeItem = items[index];
+    if (!activeItem) return;
+
+    setActiveIndex(index);
+    setIsEndScreen(false);
+    setPaused(false);
+
+    // Reset progress bar transform
+    if (progressBarRef.current) {
+      progressBarRef.current.style.transform = "scaleX(0)";
+    }
+
+    // 1. Safely pause all non-active videos
+    items.forEach((item, i) => {
+      if (i !== index) {
+        const otherVideo = videoRefs.current[item.id];
+        if (otherVideo) {
+          safePause(otherVideo);
+        }
       }
     });
-  }
+
+    // 2. Play active video if interactive
+    if (isMenuInteractiveRef.current) {
+      const activeVideo = videoRefs.current[activeItem.id];
+      if (activeVideo) {
+        if (!activeVideo.src || !activeVideo.src.includes(activeItem.video_url)) {
+          activeVideo.src = activeItem.video_url;
+        }
+        safePlay(activeVideo);
+      }
+    }
+
+    // 3. Preload the next 1 video metadata for instant swipe transition
+    const nextItem = items[index + 1];
+    if (nextItem && nextItem.video_url) {
+      const nextVideo = videoRefs.current[nextItem.id];
+      if (nextVideo && (!nextVideo.src || !nextVideo.src.includes(nextItem.video_url))) {
+        nextVideo.src = nextItem.video_url;
+        nextVideo.preload = "metadata";
+      }
+    }
+  }, [items]);
 
   // =========================================
-  // INTERSECTION OBSERVER (SNAP-TO-PLAY)
+  // INTERSECTION OBSERVER
   // =========================================
 
   useEffect(() => {
-    if (!items.length) {
-      return;
-    }
+    if (!items.length) return;
 
     const observer = new IntersectionObserver(
       (entries) => {
         entries.forEach((entry) => {
-          if (!entry.isIntersecting) {
-            return;
-          }
+          if (!entry.isIntersecting) return;
 
-          // -----------------------------------------
-          // END SCREEN
-          // -----------------------------------------
-
+          // End Screen
           if (entry.target.dataset.type === "end") {
-            pauseAllVideos();
+            items.forEach((it) => {
+              const v = videoRefs.current[it.id];
+              if (v) safePause(v);
+            });
             setIsEndScreen(true);
             setPaused(true);
             return;
           }
 
-          // -----------------------------------------
-          // MENU ITEM
-          // -----------------------------------------
-
+          // Menu Item
           const index = Number(entry.target.dataset.index);
+          if (!Number.isFinite(index)) return;
 
-          if (!Number.isFinite(index)) {
-            return;
+          // Debounce activation slightly so rapid swipes don't stall iOS media engine
+          if (scrollSettleTimeoutRef.current) {
+            clearTimeout(scrollSettleTimeoutRef.current);
           }
 
-          setIsEndScreen(false);
-          setActiveIndex(index);
-          setVideoProgress(0);
-          setPaused(false);
-
-          // 1. Immediately pause ALL other videos
-          Object.entries(videoRefs.current).forEach(([videoId, video]) => {
-            const otherIndex = items.findIndex((item) => item.id === videoId);
-            if (otherIndex !== index && video) {
-              video.pause();
-            }
-          });
-
-          // 2. PLAY ACTIVE VIDEO IMMEDIATELY (Zero delay — no 200ms lag pause!)
-          const activeItem = items[index];
-          if (activeItem && isMenuInteractiveRef.current) {
-            const video = videoRefs.current[activeItem.id];
-            if (video) {
-              if (!video.src || !video.src.includes(activeItem.video_url)) {
-                video.src = activeItem.video_url;
-              }
-              safePlay(
-                video,
-                () => setPaused(false),
-                () => setPaused(true)
-              );
-            }
-          }
-
-          // 3. Immediately prepare neighboring videos so next swipe is already buffered
-          const nextItem = items[index + 1];
-          if (nextItem) {
-            const nextVideo = videoRefs.current[nextItem.id];
-            if (nextVideo && nextItem.video_url && (!nextVideo.src || !nextVideo.src.includes(nextItem.video_url))) {
-              nextVideo.src = nextItem.video_url;
-              nextVideo.preload = "metadata";
-            }
-          }
-
-          const prevItem = items[index - 1];
-          if (prevItem) {
-            const prevVideo = videoRefs.current[prevItem.id];
-            if (prevVideo && prevItem.video_url && (!prevVideo.src || !prevVideo.src.includes(prevItem.video_url))) {
-              prevVideo.src = prevItem.video_url;
-              prevVideo.preload = "metadata";
-            }
-          }
-
-          // 4. Debounce heavy unload cleanup of far-away videos (saves GC work)
-          if (cleanupDebounceRef.current) {
-            clearTimeout(cleanupDebounceRef.current);
-          }
-
-          cleanupDebounceRef.current = setTimeout(() => {
-            manageVideoSources(index);
-          }, CLEANUP_DEBOUNCE_MS);
+          scrollSettleTimeoutRef.current = setTimeout(() => {
+            activateSlide(index);
+          }, SCROLL_SETTLE_MS);
         });
       },
       {
@@ -496,9 +410,7 @@ export default function CustomerMenu() {
     );
 
     Object.values(sectionRefs.current).forEach((section) => {
-      if (section) {
-        observer.observe(section);
-      }
+      if (section) observer.observe(section);
     });
 
     if (endScreenRef.current) {
@@ -507,25 +419,11 @@ export default function CustomerMenu() {
 
     return () => {
       observer.disconnect();
-      if (cleanupDebounceRef.current) {
-        clearTimeout(cleanupDebounceRef.current);
+      if (scrollSettleTimeoutRef.current) {
+        clearTimeout(scrollSettleTimeoutRef.current);
       }
     };
-  }, [items, manageVideoSources]);
-
-  // =========================================
-  // RESET WHEN MENU LOADS
-  // =========================================
-
-  useEffect(() => {
-    if (!items.length) {
-      return;
-    }
-
-    setActiveIndex(0);
-    setVideoProgress(0);
-    setIsEndScreen(false);
-  }, [items]);
+  }, [items, activateSlide]);
 
   // =========================================
   // SHARE MENU
@@ -533,7 +431,6 @@ export default function CustomerMenu() {
 
   async function shareMenu() {
     const url = window.location.href;
-
     try {
       if (navigator.share) {
         await navigator.share({
@@ -543,12 +440,8 @@ export default function CustomerMenu() {
         });
       } else {
         await navigator.clipboard.writeText(url);
-
         setShareMessage("Menu link copied!");
-
-        setTimeout(() => {
-          setShareMessage("");
-        }, 2000);
+        setTimeout(() => setShareMessage(""), 2000);
       }
     } catch (error) {
       console.log("Share cancelled:", error);
@@ -561,41 +454,20 @@ export default function CustomerMenu() {
 
   function scrollToNext() {
     const nextIndex = activeIndex + 1;
-
     if (nextIndex >= items.length) {
-      endScreenRef.current?.scrollIntoView({
-        behavior: "smooth",
-      });
-
+      endScreenRef.current?.scrollIntoView({ behavior: "smooth" });
       return;
     }
-
     const nextItem = items[nextIndex];
-    const nextSection = sectionRefs.current[nextItem?.id];
-
-    nextSection?.scrollIntoView({
-      behavior: "smooth",
-    });
+    sectionRefs.current[nextItem?.id]?.scrollIntoView({ behavior: "smooth" });
   }
-
-  // =========================================
-  // COLORS
-  // =========================================
 
   const primaryColor = restaurant?.primary_color || "#111111";
   const secondaryColor = restaurant?.secondary_color || "#333333";
 
-  // =========================================
-  // CURRENT ITEM
-  // =========================================
-
   const currentItem = items[activeIndex];
   const currentCategory =
     currentItem?.categories?.name || currentItem?.category_name || "";
-
-  // =========================================
-  // CATEGORIES LIST
-  // =========================================
 
   const categoriesList = items.reduce((acc, item) => {
     const catName = item.categories?.name || item.category_name;
@@ -607,7 +479,7 @@ export default function CustomerMenu() {
   }, []);
 
   // =========================================
-  // LOADING
+  // LOADING & ERROR SCREENS
   // =========================================
 
   if (loading) {
@@ -621,10 +493,6 @@ export default function CustomerMenu() {
     );
   }
 
-  // =========================================
-  // ERROR
-  // =========================================
-
   if (error || !restaurant) {
     return (
       <div className="min-h-[100dvh] bg-black text-white flex items-center justify-center px-6">
@@ -632,31 +500,19 @@ export default function CustomerMenu() {
           <div className="w-16 h-16 mx-auto rounded-2xl bg-white/10 flex items-center justify-center mb-6">
             <UtensilsCrossed size={28} className="text-white/60" />
           </div>
-
           <h1 className="text-2xl font-bold">Menu unavailable</h1>
-
-          <p className="text-white/50 mt-3">
-            {error || "We couldn't find this restaurant."}
-          </p>
+          <p className="text-white/50 mt-3">{error || "We couldn't find this restaurant."}</p>
         </div>
       </div>
     );
   }
-
-  // =========================================
-  // EMPTY MENU
-  // =========================================
 
   if (items.length === 0) {
     return (
       <div
         className="min-h-[100dvh] text-white flex items-center justify-center px-6"
         style={{
-          background: `linear-gradient(
-            135deg,
-            ${primaryColor},
-            ${secondaryColor}
-          )`,
+          background: `linear-gradient(135deg, ${primaryColor}, ${secondaryColor})`,
         }}
       >
         <div className="text-center max-w-md">
@@ -669,26 +525,20 @@ export default function CustomerMenu() {
           ) : (
             <div
               className="w-24 h-24 rounded-full mx-auto mb-6 flex items-center justify-center text-3xl font-bold border-4 border-white/20"
-              style={{
-                backgroundColor: primaryColor,
-              }}
+              style={{ backgroundColor: primaryColor }}
             >
               {restaurant.name?.charAt(0)?.toUpperCase()}
             </div>
           )}
-
           <h1 className="text-3xl font-bold">{restaurant.name}</h1>
-
-          <p className="text-white/70 mt-3">
-            The menu is currently being prepared. Please check back soon.
-          </p>
+          <p className="text-white/70 mt-3">The menu is currently being prepared. Please check back soon.</p>
         </div>
       </div>
     );
   }
 
   // =========================================
-  // CUSTOMER MENU RENDER
+  // MAIN COMPONENT RENDER
   // =========================================
 
   return (
@@ -700,10 +550,7 @@ export default function CustomerMenu() {
         overscrollBehaviorY: "contain",
       }}
     >
-      {/* =========================================
-          GLOBAL BACKGROUND MUSIC
-      ========================================== */}
-      
+      {/* Background Music */}
       {restaurant.background_music_url && (
         <audio
           ref={bgMusicRef}
@@ -717,10 +564,7 @@ export default function CustomerMenu() {
         />
       )}
 
-      {/* =========================================
-          WELCOME SCREEN
-      ========================================== */}
-
+      {/* Welcome Screen */}
       {showWelcomeScreen && (
         <div className="fixed inset-0 z-[60] flex flex-col items-center justify-center bg-black text-white p-6">
           {restaurant.logo_url ? (
@@ -747,55 +591,30 @@ export default function CustomerMenu() {
               }
 
               setShowWelcomeScreen(false);
-              
+
               if (restaurant.intro_video_url) {
                 if (introVideoRef.current) {
                   introVideoRef.current.muted = false;
                   introVideoRef.current.play().catch(console.error);
                 }
-                
-                // Preload first 2 items during intro
+                // Preload first video
                 const firstItem = items[0];
-                if (firstItem) {
+                if (firstItem && firstItem.video_url) {
                   const video = videoRefs.current[firstItem.id];
-                  if (video && firstItem.video_url) {
+                  if (video) {
                     video.src = firstItem.video_url;
                     video.preload = "auto";
-                    video.load();
-                  }
-                }
-                const secondItem = items[1];
-                if (secondItem) {
-                  const video2 = videoRefs.current[secondItem.id];
-                  if (video2 && secondItem.video_url) {
-                    video2.src = secondItem.video_url;
-                    video2.preload = "metadata";
                   }
                 }
               } else {
                 isMenuInteractiveRef.current = true;
-                
-                const activeItem = items[activeIndex];
-                if (activeItem) {
+                const activeItem = items[0];
+                if (activeItem && activeItem.video_url) {
                   const video = videoRefs.current[activeItem.id];
-                  if (video && activeItem.video_url) {
+                  if (video) {
                     video.src = activeItem.video_url;
                     video.preload = "auto";
-                    safePlay(
-                      video,
-                      () => setPaused(false),
-                      () => setPaused(true)
-                    );
-                  }
-                }
-
-                // Preload second item
-                const nextItem = items[activeIndex + 1];
-                if (nextItem) {
-                  const nextVideo = videoRefs.current[nextItem.id];
-                  if (nextVideo && nextItem.video_url) {
-                    nextVideo.src = nextItem.video_url;
-                    nextVideo.preload = "metadata";
+                    safePlay(video);
                   }
                 }
 
@@ -812,10 +631,7 @@ export default function CustomerMenu() {
         </div>
       )}
 
-      {/* =========================================
-          INTRO OVERLAY
-      ========================================== */}
-
+      {/* Intro Video Overlay */}
       <div
         className={`fixed inset-0 z-[60] bg-black flex items-center justify-center ${
           introFading
@@ -833,32 +649,18 @@ export default function CustomerMenu() {
           src={restaurant.intro_video_url}
           autoPlay
           playsInline
+          webkit-playsinline="true"
           preload="auto"
           onEnded={() => {
             setIntroFading(true);
             isMenuInteractiveRef.current = true;
 
-            const activeItem = items[activeIndex];
-            if (activeItem) {
+            const activeItem = items[activeIndexRef.current];
+            if (activeItem && activeItem.video_url) {
               const video = videoRefs.current[activeItem.id];
               if (video) {
-                if (!video.src && activeItem.video_url) {
-                  video.src = activeItem.video_url;
-                }
-                safePlay(
-                  video,
-                  () => setPaused(false),
-                  () => setPaused(true)
-                );
-              }
-            }
-
-            const nextItem = items[activeIndex + 1];
-            if (nextItem) {
-              const nextVideo = videoRefs.current[nextItem.id];
-              if (nextVideo && nextItem.video_url && !nextVideo.src) {
-                nextVideo.src = nextItem.video_url;
-                nextVideo.preload = "metadata";
+                if (!video.src) video.src = activeItem.video_url;
+                safePlay(video);
               }
             }
 
@@ -874,7 +676,7 @@ export default function CustomerMenu() {
           }}
           className="w-full h-full object-cover"
         />
-        
+
         <button
           onClick={() => {
             if (introVideoRef.current) {
@@ -885,27 +687,12 @@ export default function CustomerMenu() {
             setIntroFading(true);
             isMenuInteractiveRef.current = true;
 
-            const activeItem = items[activeIndex];
-            if (activeItem) {
+            const activeItem = items[activeIndexRef.current];
+            if (activeItem && activeItem.video_url) {
               const video = videoRefs.current[activeItem.id];
               if (video) {
-                if (!video.src && activeItem.video_url) {
-                  video.src = activeItem.video_url;
-                }
-                safePlay(
-                  video,
-                  () => setPaused(false),
-                  () => setPaused(true)
-                );
-              }
-            }
-
-            const nextItem = items[activeIndex + 1];
-            if (nextItem) {
-              const nextVideo = videoRefs.current[nextItem.id];
-              if (nextVideo && nextItem.video_url && !nextVideo.src) {
-                nextVideo.src = nextItem.video_url;
-                nextVideo.preload = "metadata";
+                if (!video.src) video.src = activeItem.video_url;
+                safePlay(video);
               }
             }
 
@@ -926,18 +713,19 @@ export default function CustomerMenu() {
       </div>
 
       {/* =========================================
-          MENU ITEMS
+          FEED OF DISH CARDS
       ========================================== */}
 
       {items.map((item, index) => {
         const isActive = index === activeIndex;
         const hasVideo = Boolean(item.video_url);
         const hasImage = Boolean(item.image_url);
-        const categoryName =
-          item?.categories?.name || item?.category_name || "";
+        const categoryName = item?.categories?.name || item?.category_name || "";
 
-        // Keep DOM light: Only render full video elements within active ± PRELOAD_WINDOW
-        const isNearby = Math.abs(index - activeIndex) <= PRELOAD_WINDOW;
+        // Instant visual frame: If image_url exists, use it; otherwise use video poster frame (#t=0.001)
+        const posterSrc = item.image_url || (item.video_url ? `${item.video_url}#t=0.001` : null);
+
+        const isVideoReady = playingMap[item.id];
         const isBuffering = bufferingMap[item.id] && isActive;
 
         return (
@@ -946,73 +734,56 @@ export default function CustomerMenu() {
             ref={(element) => setSectionRef(item.id, element)}
             data-index={index}
             data-type="item"
-            className="relative h-[100dvh] w-full snap-start snap-always overflow-hidden bg-black"
-            style={{
-              transform: "translateZ(0)",
-              backfaceVisibility: "hidden",
-            }}
+            className="relative h-[100dvh] w-full snap-start overflow-hidden bg-black"
           >
             {/* =========================================
-                BACKGROUND MEDIA
+                BACKGROUND MEDIA LAYER
             ========================================== */}
 
-            {hasVideo && isNearby ? (
-              <video
-                ref={(element) => setVideoRef(item.id, element)}
-                poster={item.image_url || undefined}
-                muted
-                playsInline
-                webkit-playsinline="true"
-                disableRemotePlayback
-                loop
-                preload={isActive ? "auto" : "metadata"}
-                onTimeUpdate={(event) => handleVideoTimeUpdate(event, index)}
-                onPlay={() => handleVideoPlay(index)}
-                onEnded={() => handleVideoEnded(index)}
-                onClick={() => togglePlay(item.id)}
-                onWaiting={() => handleVideoWaiting(item.id)}
-                onPlaying={() => handleVideoPlaying(item.id)}
-                onCanPlay={() => handleVideoPlaying(item.id)}
-                className="absolute inset-0 w-full h-full object-cover cursor-pointer"
-                style={{
-                  transform: "translateZ(0)",
-                  backfaceVisibility: "hidden",
-                }}
-              />
-            ) : hasVideo ? (
-              hasImage ? (
-                <img
-                  src={item.image_url}
-                  alt={item.name}
-                  className="absolute inset-0 w-full h-full object-cover"
-                  loading="lazy"
-                />
-              ) : (
-                <div className="absolute inset-0 bg-black" />
-              )
-            ) : hasImage ? (
+            {/* Layer 1: Instant Poster (ALWAYS rendered - Zero black screen, instant 60fps frame) */}
+            {posterSrc ? (
               <img
-                src={item.image_url}
+                src={posterSrc}
                 alt={item.name}
-                className="absolute inset-0 w-full h-full object-cover"
-                loading="lazy"
+                loading={index <= 1 ? "eager" : "lazy"}
+                className="absolute inset-0 w-full h-full object-cover pointer-events-none"
               />
             ) : (
               <div
-                className="absolute inset-0 flex items-center justify-center"
+                className="absolute inset-0 flex items-center justify-center pointer-events-none"
                 style={{
-                  background: `linear-gradient(
-                    135deg,
-                    ${primaryColor},
-                    ${secondaryColor}
-                  )`,
+                  background: `linear-gradient(135deg, ${primaryColor}, ${secondaryColor})`,
                 }}
               >
                 <UtensilsCrossed size={70} className="text-white/20" />
               </div>
             )}
 
-            {/* Buffering Spinner */}
+            {/* Layer 2: Video Player (Permanently mounted, fades in smoothly when ready) */}
+            {hasVideo && (
+              <video
+                ref={(element) => setVideoRef(item.id, element)}
+                muted
+                playsInline
+                webkit-playsinline="true"
+                x5-playsinline="true"
+                disablePictureInPicture
+                disableRemotePlayback
+                loop
+                preload={isActive ? "auto" : "none"}
+                onTimeUpdate={(event) => handleVideoTimeUpdate(event, index)}
+                onEnded={() => handleVideoEnded(index)}
+                onClick={() => togglePlay(item.id)}
+                onWaiting={() => handleVideoWaiting(item.id)}
+                onPlaying={() => handleVideoPlaying(item.id)}
+                onCanPlay={() => handleVideoPlaying(item.id)}
+                className={`absolute inset-0 w-full h-full object-cover cursor-pointer transition-opacity duration-300 ${
+                  isVideoReady ? "opacity-100" : "opacity-0"
+                }`}
+              />
+            )}
+
+            {/* Layer 3: Buffering Spinner (Appears gracefully over poster on slow networks) */}
             {isBuffering && (
               <div className="absolute inset-0 z-[5] flex items-center justify-center pointer-events-none">
                 <div className="w-12 h-12 rounded-full bg-black/50 backdrop-blur-sm flex items-center justify-center">
@@ -1021,7 +792,7 @@ export default function CustomerMenu() {
               </div>
             )}
 
-            {/* Dark Gradients */}
+            {/* Gradients */}
             <div className="absolute inset-0 bg-gradient-to-b from-black/50 via-transparent to-black/90 pointer-events-none" />
             <div className="absolute inset-x-0 top-0 h-40 bg-gradient-to-b from-black/60 to-transparent pointer-events-none" />
 
@@ -1041,9 +812,7 @@ export default function CustomerMenu() {
                   ) : (
                     <div
                       className="w-11 h-11 sm:w-12 sm:h-12 rounded-full flex items-center justify-center font-bold border border-white/20 shadow-lg"
-                      style={{
-                        backgroundColor: primaryColor,
-                      }}
+                      style={{ backgroundColor: primaryColor }}
                     >
                       {restaurant.name?.charAt(0)?.toUpperCase()}
                     </div>
@@ -1053,11 +822,8 @@ export default function CustomerMenu() {
                     <p className="font-semibold text-sm sm:text-base truncate max-w-[190px] sm:max-w-xs">
                       {restaurant.name}
                     </p>
-
                     {categoryName && (
-                      <p className="text-xs text-white/60 mt-0.5">
-                        {categoryName}
-                      </p>
+                      <p className="text-xs text-white/60 mt-0.5">{categoryName}</p>
                     )}
                   </div>
                 </div>
@@ -1074,7 +840,6 @@ export default function CustomerMenu() {
                       >
                         <FileText size={18} />
                       </a>
-                      
                       {index === 0 && (
                         <div className="absolute top-[120%] right-0 whitespace-nowrap bg-white text-black px-3 py-1.5 rounded-lg text-xs font-bold shadow-xl animate-bounce pointer-events-none origin-top-right before:content-[''] before:absolute before:bottom-[99%] before:right-4 before:border-4 before:border-transparent before:border-b-white">
                           View full menu
@@ -1124,19 +889,19 @@ export default function CustomerMenu() {
                 </div>
               </div>
 
-              {/* Progress */}
+              {/* Progress Bar (Updated via hardware transform ref, zero React re-renders) */}
               <div className="mt-4 w-full h-0.5 rounded-full bg-white/25 overflow-hidden">
                 <div
-                  className="h-full rounded-full"
+                  ref={isActive ? progressBarRef : null}
+                  className="h-full rounded-full bg-white origin-left"
                   style={{
-                    width: `${videoProgress}%`,
-                    backgroundColor: "#ffffff",
-                    transition: "width 200ms linear",
+                    transform: "scaleX(0)",
+                    transition: "transform 150ms linear",
                   }}
                 />
               </div>
 
-              {/* Categories Filter */}
+              {/* Categories Navigation */}
               {categoriesList.length > 1 && (
                 <div className="mt-3 flex gap-2 overflow-x-auto pb-1 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
                   {categoriesList.map((cat) => {
@@ -1166,7 +931,7 @@ export default function CustomerMenu() {
               )}
             </div>
 
-            {/* Play/Pause Button */}
+            {/* Play/Pause Overlay Icon */}
             {hasVideo && (
               <button
                 type="button"
@@ -1178,27 +943,21 @@ export default function CustomerMenu() {
                     : "opacity-0 scale-90 hover:opacity-100"
                 }`}
               >
-                {paused ? (
-                  <Play size={27} fill="white" />
-                ) : (
-                  <Pause size={25} fill="white" />
-                )}
+                {paused ? <Play size={27} fill="white" /> : <Pause size={25} fill="white" />}
               </button>
             )}
 
             {/* Dish Information */}
-            <div 
+            <div
               className="absolute left-0 right-0 bottom-0 z-20 px-5 sm:px-7 pb-16 sm:pb-20"
-              style={{ paddingBottom: 'max(env(safe-area-inset-bottom, 4rem), 4rem)' }}
+              style={{ paddingBottom: "max(env(safe-area-inset-bottom, 4rem), 4rem)" }}
             >
               <div className="max-w-2xl">
                 {categoryName && (
                   <div className="mb-3">
                     <span
                       className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium backdrop-blur-md border border-white/10"
-                      style={{
-                        backgroundColor: `${primaryColor}CC`,
-                      }}
+                      style={{ backgroundColor: `${primaryColor}CC` }}
                     >
                       {categoryName}
                     </span>
@@ -1218,7 +977,6 @@ export default function CustomerMenu() {
                   <h1 className="text-2xl sm:text-3xl font-bold leading-tight drop-shadow-lg">
                     {item.name}
                   </h1>
-
                   <span className="text-xl sm:text-2xl font-bold drop-shadow-lg text-white/90 pb-0.5">
                     ₹{Number(item.price || 0).toFixed(0)}
                   </span>
@@ -1261,9 +1019,7 @@ export default function CustomerMenu() {
                     onClick={scrollToNext}
                     className="flex flex-col items-center gap-1 text-white/60"
                   >
-                    <span className="text-[10px] uppercase tracking-widest">
-                      Swipe
-                    </span>
+                    <span className="text-[10px] uppercase tracking-widest">Swipe</span>
                     <ChevronDown size={20} className="animate-bounce" />
                   </button>
                 </div>
@@ -1290,15 +1046,10 @@ export default function CustomerMenu() {
         data-type="end"
         className="relative h-[100dvh] w-full snap-start flex items-center justify-center overflow-hidden"
         style={{
-          background: `linear-gradient(
-            135deg,
-            ${primaryColor},
-            ${secondaryColor}
-          )`,
+          background: `linear-gradient(135deg, ${primaryColor}, ${secondaryColor})`,
         }}
       >
         <div className="absolute inset-0 bg-black/20" />
-
         <div className="relative z-10 text-center px-6 max-w-md">
           {restaurant.logo_url ? (
             <img
@@ -1309,30 +1060,20 @@ export default function CustomerMenu() {
           ) : (
             <div
               className="w-24 h-24 rounded-full mx-auto flex items-center justify-center text-3xl font-bold border-4 border-white/20 shadow-2xl"
-              style={{
-                backgroundColor: primaryColor,
-              }}
+              style={{ backgroundColor: primaryColor }}
             >
               {restaurant.name?.charAt(0)?.toUpperCase()}
             </div>
           )}
 
-          <h2 className="text-3xl sm:text-4xl font-bold mt-6">
-            {restaurant.name}
-          </h2>
-
-          <p className="text-white/70 mt-3">
-            You've reached the end of the menu.
-          </p>
+          <h2 className="text-3xl sm:text-4xl font-bold mt-6">{restaurant.name}</h2>
+          <p className="text-white/70 mt-3">You've reached the end of the menu.</p>
 
           <div className="flex flex-wrap justify-center gap-3 mt-7">
             <button
               type="button"
               onClick={() => {
-                const firstSection = sectionRefs.current[items[0]?.id];
-                firstSection?.scrollIntoView({
-                  behavior: "smooth",
-                });
+                sectionRefs.current[items[0]?.id]?.scrollIntoView({ behavior: "smooth" });
               }}
               className="px-5 py-3 rounded-full bg-white text-black font-semibold hover:bg-white/90 transition"
             >
@@ -1362,7 +1103,7 @@ export default function CustomerMenu() {
       </section>
 
       {/* =========================================
-          RESTAURANT INFO MODAL
+          INFO MODAL
       ========================================== */}
 
       {showInfo && (
@@ -1376,12 +1117,9 @@ export default function CustomerMenu() {
           >
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs uppercase tracking-wider text-gray-400 font-semibold">
-                  Restaurant
-                </p>
+                <p className="text-xs uppercase tracking-wider text-gray-400 font-semibold">Restaurant</p>
                 <h3 className="text-2xl font-bold mt-1">{restaurant.name}</h3>
               </div>
-
               <button
                 type="button"
                 onClick={() => setShowInfo(false)}
@@ -1417,12 +1155,9 @@ export default function CustomerMenu() {
                   <div className="w-9 h-9 rounded-xl bg-white border flex items-center justify-center shrink-0">
                     <MapPin size={17} />
                   </div>
-
                   <div>
                     <p className="text-xs text-gray-400">Address</p>
-                    <p className="text-sm font-medium mt-1">
-                      {restaurant.address}
-                    </p>
+                    <p className="text-sm font-medium mt-1">{restaurant.address}</p>
                   </div>
                 </div>
               )}
@@ -1435,12 +1170,9 @@ export default function CustomerMenu() {
                   <div className="w-9 h-9 rounded-xl bg-white border flex items-center justify-center shrink-0">
                     <Phone size={17} />
                   </div>
-
                   <div>
                     <p className="text-xs text-gray-400">Phone</p>
-                    <p className="text-sm font-medium mt-1">
-                      {restaurant.phone}
-                    </p>
+                    <p className="text-sm font-medium mt-1">{restaurant.phone}</p>
                   </div>
                 </a>
               )}
@@ -1456,7 +1188,6 @@ export default function CustomerMenu() {
                   Call
                 </a>
               )}
-
               <button
                 type="button"
                 onClick={() => setShowInfo(false)}
@@ -1471,10 +1202,6 @@ export default function CustomerMenu() {
     </div>
   );
 }
-
-// =========================================
-// SMALL CLOSE ICON
-// =========================================
 
 function XIcon() {
   return (
